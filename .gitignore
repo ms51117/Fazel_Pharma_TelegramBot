@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+venv/
+.venv/
+.idea/ # PyCharm specific files
+
+# Database and secrets
+.env
