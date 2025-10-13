@@ -23,8 +23,8 @@ class APIClient:
         self._lock = asyncio.Lock()
 
         # خواندن اطلاعات از settings
-        self._username = settings.API_BOT_USERNAME
-        self._password = settings.API_BOT_PASSWORD.get_secret_value()
+        self._username = settings.API_USERNAME
+        self._password = settings.API_PASSWORD.get_secret_value()
 
     async def _login(self) -> None:
         """

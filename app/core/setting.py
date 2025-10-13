@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     API_BASE_URL: str
 
     # --- System User for Bot Login ---
-    API_BOT_USERNAME: str
-    API_BOT_PASSWORD: SecretStr
+    API_USERNAME: str
+    API_PASSWORD: SecretStr
     ACCESS_TOKEN_EXPIRE_MINUTES: int
 
 
