@@ -2,120 +2,67 @@
 
 import asyncio
 import logging
-import sys
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.client.default import DefaultBotProperties
 
-# Import our settings and the API client instance
 from app.core.setting import settings
-from app.core.API_Client import APIClient,api_client
+from app.core.API_Client import APIClient
+from app.filters.role_filter import RoleFilter
 
-from aiogram.client.default import DefaultBotProperties #
+# ایمپورت کردن روترهای جدید از فایل‌هایشان
+from app.admin.handlers import admin_router
+from app.patient.handlers import patient_router
 
-
-# --- Placeholder Handlers (We will replace these later) ---
-# We create dummy handlers for each role to test the routing logic.
-# In the future, these will be imported from app/admin/handlers.py, etc.
-
-async def handle_admin_message(message: Message, user_role: str):
-    await message.answer(f"Hello admin! Your message was: '{message.text}'\nYour confirmed role is: {user_role}")
-
-
-async def handle_casher_message(message: Message, user_role: str):
-    await message.answer(f"Hello casher! Your message was: '{message.text}'\nYour confirmed role is: {user_role}")
+# لیست تمام نقش‌های تعریف شده در سیستم شما
+# این لیست برای ثبت یک هندلر "fallback" استفاده می‌شود
+ALL_ROLES = ["Admin", "Consultant", "Casher", "Patient"]
 
 
-async def handle_consultant_message(message: Message, user_role: str):
-    await message.answer(f"Hello consultant! Your message was: '{message.text}'\nYour confirmed role is: {user_role}")
-
-
-async def handle_patient_message(message: Message, user_role: str):
-    await message.answer(f"Welcome, Patient! Your message was: '{message.text}'\nWe see you as a: {user_role}")
-
-
-# A dictionary to map role names to their handler functions
-ROLE_HANDLERS = {
-    "admin": handle_admin_message,
-    "casher": handle_casher_message,
-    "consultant": handle_consultant_message,
-    "Patient": handle_patient_message,
-}
-
-
-# --- The Main Dispatcher Logic ---
-async def role_based_dispatcher(message: Message, bot: Bot):
-    """
-    This is the core logic of our bot.
-    1. It gets the user's role from the API.
-    2. It calls the appropriate handler based on the role.
-    """
-    telegram_id = message.from_user.id
-    try:
-        # Get user role from our API client
-        user_role = await api_client.get_user_role(telegram_id)
-
-        # If get_user_role returns None or an unrecognized role, default to "Patient"
-        if not user_role or user_role not in ROLE_HANDLERS:
-            logging.warning(f"User {telegram_id} has role '{user_role}', which has no handler. Defaulting to Patient.")
-            user_role = "Patient"
-
-        # Get the correct handler function from our mapping
-        handler_function = ROLE_HANDLERS[user_role]
-
-        # Call the handler and pass the message and role
-        await handler_function(message=message, user_role=user_role)
-
-    except Exception as e:
-        logging.error(f"Failed to process message for user {telegram_id}: {e}")
-        await message.answer("An error occurred while processing your request. Please try again later.")
-
-
-# --- Bot Startup and Shutdown Logic ---
 async def main() -> None:
-    # Initialize Bot instance with a default parse mode which will be passed to all API calls
-    default_properties = DefaultBotProperties(parse_mode=ParseMode.HTML)
+    # ۱. ساخت کلاینت API
+    # این کلاینت به عنوان یک وابستگی به Dispatcher تزریق می‌شود تا در فیلترها در دسترس باشد
+    api_client = APIClient(base_url=settings.API_BASE_URL)
 
-    bot = Bot(settings.BOT_TOKEN.get_secret_value(), default=default_properties)
+    # ۲. ساخت Bot و Dispatcher
+    bot = Bot(
+        token=settings.BOT_TOKEN.get_secret_value(),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+    # پاس دادن نمونه api_client به dispatcher در زمان ساخت
+    # حالا در تمام فیلترها و میدل‌ورها به متغیر 'api_client' دسترسی داریم
+    dp = Dispatcher(api_client=api_client)
 
-    # Create a Dispatcher instance
-    dp = Dispatcher()
+    # ۳. ثبت روترها با فیلتر نقش
+    # این روتر فقط برای کاربرانی با نقش "Admin" فعال می‌شود
+    admin_router.message.filter(RoleFilter(allowed_roles=["Admin"]))
+    dp.include_router(admin_router)
 
-    # The most important part: Register our role dispatcher to handle ALL messages
-    # This function will now act as a gatekeeper for every incoming message.
-    dp.message.register(role_based_dispatcher)
+    # این روتر فقط برای کاربرانی با نقش "Patient" فعال می‌شود
+    patient_router.message.filter(RoleFilter(allowed_roles=["Patient"]))
+    dp.include_router(patient_router)
 
-    # A simple handler for the /start command to give a welcome message
-    # This will be caught by role_based_dispatcher as well, which is fine.
-    # @dp.message(CommandStart())
-    # async def command_start_handler(message: Message) -> None:
-    #     await message.answer(f"Hello, {message.from_user.full_name}! Welcome to Fazel Pharma.")
+    # در آینده می‌توانید به همین ترتیب روترهای دیگر را اضافه کنید
+    # consultant_router.message.filter(RoleFilter(allowed_roles=["Consultant"]))
+    # dp.include_router(consultant_router)
 
-    # --- Initial API Login ---
-    # Try to log in to the API when the bot starts.
-    # If it fails, the bot will not start.
+    # ۴. اجرای ربات
     try:
-        # This will trigger the _login method in our APIClient
-        await api_client._get_valid_token()
-    except Exception as e:
-        logging.critical(f"Could not connect to API on startup. Shutting down. Error: {e}")
-        return  # Exit the main function if API login fails
+        # بررسی سلامت API قبل از شروع
+        await api_client.login_check()  # بیایید یک نام بهتر برای این تابع بگذاریم
+        logging.info("API Health check passed. Starting bot...")
 
-    # Start polling
-    try:
         await dp.start_polling(bot)
     finally:
-        # Close the API client's session on shutdown
         await api_client.close()
-        logging.info("Bot stopped and API client session closed.")
+        await bot.session.close()
+        logging.info("Bot stopped and sessions closed.")
 
 
 if __name__ == "__main__":
-    if __name__ == "__main__":
-        logging.basicConfig(level=logging.INFO)
-        try:
-            asyncio.run(main())
-        except (KeyboardInterrupt, SystemExit):
-            logging.warning("Bot stopped by user.")
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.warning("Bot stopped by user.")

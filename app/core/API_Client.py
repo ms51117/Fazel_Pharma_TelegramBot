@@ -1,114 +1,121 @@
-# app/services/api_client.py
+# app/core/services/api_client.py
+
+import asyncio
+import logging
+from typing import Optional
 
 import httpx
-import asyncio
-from typing import Optional, Dict, Any
-from datetime import datetime, timedelta, timezone
+from httpx import AsyncClient, HTTPStatusError
 
 from app.core.setting import settings
 
 
 class APIClient:
     """
-    A client for interacting with the Fazel Pharma API.
-    Handles authentication, token management, and API requests.
+    یک کلاینت Async برای تعامل با FastAPI بک‌اند.
+    این کلاس مسئول لاگین کردن، مدیریت توکن JWT و ارسال درخواست‌ها است.
     """
 
-    def __init__(self, base_url: str, username: str, password: str):
-        self.base_url = base_url
-        self._username = username
-        self._password = password
+    def __init__(self, base_url: str):
+        self._base_url = base_url
+        self._client = AsyncClient()
         self._token: Optional[str] = None
-        self._token_expiry: Optional[datetime] = None
-        self._client = httpx.AsyncClient(base_url=self.base_url)
-        self._token_lock = asyncio.Lock()  # Prevents multiple coroutines from trying to refresh the token at the same time
+        self._lock = asyncio.Lock()
+
+        # خواندن اطلاعات از settings
+        self._username = settings.API_BOT_USERNAME
+        self._password = settings.API_BOT_PASSWORD.get_secret_value()
 
     async def _login(self) -> None:
-        """Logs in to the API and stores the access token."""
-        print("🤖 Attempting to log in to the API...")
+        """
+        با استفاده از نام کاربری و رمز عبور سیستم، لاگین کرده و توکن JWT را دریافت می‌کند.
+        این متد داده‌ها را به صورت JSON ارسال می‌کند تا با بک‌اند FastAPI هماهنگ باشد.
+        """
+        login_data = {
+            "username": self._username,
+            "password": self._password,
+        }
         try:
+            logging.info(f"Attempting to login to the API with JSON payload for user '{self._username}'...")
+
+            # --- تغییر کلیدی اینجاست ---
             response = await self._client.post(
-                "/login/access-token",
-                json={"username": self._username, "password": self._password}
+                f"{self._base_url}/login/access-token",
+                json=login_data  # استفاده از 'json' برای ارسال application/json
             )
-            response.raise_for_status()  # Raise exception for 4xx or 5xx status codes
+            # --------------------------
 
-            data = response.json()
-            self._token = data["access_token"]
+            response.raise_for_status()
 
-            # Set token expiry time (e.g., 25 minutes for a 30-min token to be safe)
-            # This is a client-side expiry check, independent of the actual JWT expiry
-            self._token_expiry = datetime.now(timezone.utc) + timedelta(
-                minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES - 5)
+            token_data = response.json()
+            self._token = token_data.get("access_token")
 
-            print("✅ API login successful. Token acquired.")
-        except httpx.HTTPStatusError as e:
-            print(f"❌ API Login failed! Status: {e.response.status_code}, Response: {e.response.text}")
-            raise  # Re-raise the exception to be handled by the caller
+            if not self._token:
+                logging.error("Login successful, but no access token found in response.")
+                raise ValueError("Access token not in response")
+
+            logging.info("Successfully logged in and got the token.")
+
+        except HTTPStatusError as e:
+            error_details = ""
+            try:
+                error_details = e.response.json()
+            except Exception:
+                error_details = e.response.text
+            logging.error(f"HTTP error during login: {e.response.status_code} - Details: {error_details}")
+            raise
         except Exception as e:
-            print(f"❌ An unexpected error occurred during API login: {e}")
+            logging.error(f"An unexpected error occurred during login: {e}")
             raise
 
-    async def _get_valid_token(self) -> str:
+    async def login_check(self):
         """
-        Returns a valid access token, refreshing it if necessary.
-        This method is thread-safe (or rather, coroutine-safe).
+        بررسی می‌کند که آیا توکن وجود دارد یا خیر. اگر وجود نداشت، لاگین می‌کند.
         """
-        async with self._token_lock:
-            # Check if token is missing or expired
-            if self._token is None or (self._token_expiry and datetime.now(timezone.utc) > self._token_expiry):
-                print("⚠️ Token is missing or expired. Refreshing...")
+        async with self._lock:
+            if not self._token:
+                logging.warning("Token is missing. Attempting to log in...")
                 await self._login()
-
-        if self._token is None:
-            # This should not happen if _login is successful
-            raise Exception("Failed to obtain a valid token after login attempt.")
-
         return self._token
 
-    async def get_user_role(self, telegram_id: int) -> Optional[str]:
+    async def get_user_role(self, telegram_id: int) -> str:
         """
-        Fetches the role of a user from the API by their Telegram ID.
-        Returns the role name (e.g., "admin", "Patient") or None if the user has no role.
-        Raises an exception if the user is not found or another error occurs.
+        نقش کاربر را بر اساس شناسه تلگرام از API دریافت می‌کند.
+        اگر کاربر پیدا نشد (404)، نقش پیش‌فرض "Patient" را برمی‌گرداند.
         """
-        token = await self._get_valid_token()
-        headers = {"Authorization": f"Bearer {token}"}
-
         try:
-            response = await self._client.get(
-                f"/users/by-telegram-id/{telegram_id}",
-                headers=headers
-            )
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
 
-            # If user not found (404), we treat it as a new user (Patient)
-            if response.status_code == 404:
-                print(f"User with telegram_id {telegram_id} not found in API. Treating as new Patient.")
-                return "Patient"  # Default role for unknown users
+            url = f"{self._base_url}/users/by-telegram-id/{telegram_id}"
+            response = await self._client.get(url, headers=headers)
 
-            response.raise_for_status()  # Raise for other errors
+            response.raise_for_status()
 
-            data = response.json()
-            # The API returns {"roleName": "admin"} or {"roleName": null}
-            return data.get("roleName") or "Patient"  # If roleName is null, default to Patient
+            user_data = response.json()
+            role_name = user_data.get("role", {}).get("roleName")
 
-        except httpx.HTTPStatusError as e:
-            print(f"Error fetching user role for {telegram_id}: {e.response.status_code} - {e.response.text}")
-            # Decide how to handle this. For now, let's re-raise.
-            raise
+            if role_name:
+                logging.info(f"Role for telegram_id {telegram_id} is '{role_name}'.")
+                return role_name
+            else:
+                logging.warning(f"User with telegram_id {telegram_id} found, but has no role name.")
+                return "Patient"
+
+        except HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logging.info(f"User with telegram_id {telegram_id} not found. Assigning 'Patient' role.")
+                return "Patient"
+            else:
+                logging.error(
+                    f"HTTP error getting user role for {telegram_id}: {e.response.status_code} - {e.response.text}")
+                return "Patient"
         except Exception as e:
-            print(f"An unexpected error occurred while fetching user role: {e}")
-            raise
+            logging.error(f"Unexpected error getting user role for {telegram_id}: {e}")
+            return "Patient"
 
     async def close(self):
-        """Closes the underlying HTTPX client."""
+        """
+        کلاینت HTTP را به درستی می‌بندد.
+        """
         await self._client.aclose()
-
-
-# Create a single instance of the client to be used throughout the application
-# This is an implementation of the Singleton pattern
-api_client = APIClient(
-    base_url=settings.API_BASE_URL,
-    username=settings.API_BOT_USERNAME,
-    password=settings.API_BOT_PASSWORD.get_secret_value()
-)
