@@ -13,3 +13,6 @@ class PatientRegistration(StatesGroup):
     waiting_for_weight = State()         # منتظر دریافت وزن
     waiting_for_height = State()         # منتظر دریافت قد
     waiting_for_disease_description = State() # منتظر دریافت توضیحات بیماری
+
+    waiting_for_photos = State()         # منتظر دریافت عکس‌ها
+    confirm_photo_upload = State()

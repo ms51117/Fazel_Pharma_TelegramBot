@@ -22,3 +22,13 @@ def get_gender_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="زن", callback_data="gender_female")
     )
     return builder.as_markup()
+def get_photo_confirmation_keyboard() -> InlineKeyboardMarkup:
+    """
+    یک کیبورد برای تایید ارسال عکس بیشتر یا اتمام فرآیند ایجاد می‌کند.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✔️ بله، عکس دیگری دارم", callback_data="add_another_photo"),
+        InlineKeyboardButton(text="✅ خیر، کافی است (پایان ثبت‌نام)", callback_data="finish_registration")
+    )
+    return builder.as_markup()

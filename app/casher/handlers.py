@@ -6,6 +6,12 @@ from aiogram.filters import CommandStart
 # 1. یک روتر جدید برای نقش casher ایجاد می‌کنیم
 casher_router = Router()
 
+
+
+
+
+
+
 # 2. یک هندلر برای دستور /start تعریف می‌کنیم
 @casher_router.message(CommandStart())
 async def handle_admin_start(message: types.Message):
