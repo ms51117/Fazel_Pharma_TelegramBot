@@ -7,6 +7,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
+from app.casher.handlers import casher_router
+from app.consultant.handlers import consultant_router
 from app.core.setting import settings
 from app.core.API_Client import APIClient
 from app.filters.role_filter import RoleFilter
@@ -41,11 +43,16 @@ async def main() -> None:
 
     # این روتر فقط برای کاربرانی با نقش "Patient" فعال می‌شود
     patient_router.message.filter(RoleFilter(allowed_roles=["Patient"]))
+    patient_router.callback_query.filter(RoleFilter(allowed_roles=["Patient"]))
+
     dp.include_router(patient_router)
 
     # در آینده می‌توانید به همین ترتیب روترهای دیگر را اضافه کنید
-    # consultant_router.message.filter(RoleFilter(allowed_roles=["Consultant"]))
-    # dp.include_router(consultant_router)
+    consultant_router.message.filter(RoleFilter(allowed_roles=["Consultant"]))
+    dp.include_router(consultant_router)
+
+    casher_router.message.filter(RoleFilter(allowed_roles=["Casher"]))
+    dp.include_router(casher_router)
 
     # ۴. اجرای ربات
     try:
