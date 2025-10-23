@@ -38,24 +38,25 @@ async def main() -> None:
 
     # ۳. ثبت روترها با فیلتر نقش
     # این روتر فقط برای کاربرانی با نقش "Admin" فعال می‌شود
-    admin_router.message.filter(RoleFilter(allowed_roles=["Admin"]))
-    dp.include_router(admin_router)
+    # admin_router.message.filter(RoleFilter(allowed_roles=["Admin"]))
+    # dp.include_router(admin_router)
 
 
     # این روتر فقط برای کاربرانی با نقش "Patient" فعال می‌شود
     patient_router.message.filter(RoleFilter(allowed_roles=["Patient"]))
     patient_router.callback_query.filter(RoleFilter(allowed_roles=["Patient"]))
+
     dp.include_router(patient_router)
 
 
     # در آینده می‌توانید به همین ترتیب روترهای دیگر را اضافه کنید
     consultant_router.message.filter(RoleFilter(allowed_roles=["Consultant"]))
-    patient_router.callback_query.filter(RoleFilter(allowed_roles=["Consultant"]))
+    consultant_router.callback_query.filter(RoleFilter(allowed_roles=["Consultant"]))
     dp.include_router(consultant_router)
 
 
     casher_router.message.filter(RoleFilter(allowed_roles=["Casher"]))
-    patient_router.callback_query.filter(RoleFilter(allowed_roles=["Casher"]))
+    casher_router.callback_query.filter(RoleFilter(allowed_roles=["Casher"]))
     dp.include_router(casher_router)
 
     # ۴. اجرای ربات

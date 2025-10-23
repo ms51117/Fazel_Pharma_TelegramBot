@@ -9,6 +9,13 @@ from aiogram.types import Message, CallbackQuery, InputFile
 from app.core.API_Client import APIClient
 from .states import ConsultantFlow
 from .keyboards import create_dates_keyboard, create_patients_keyboard
+from .keyboards import (
+    create_dates_keyboard,
+    create_patients_keyboard,
+    get_start_prescription_keyboard, # <--- جدید
+    create_disease_types_keyboard,   # <--- جدید
+    create_drugs_keyboard            # <--- جدید
+)
 
 consultant_router = Router()
 logger = logging.getLogger(__name__)
@@ -106,10 +113,120 @@ async def process_patient_choice(callback: CallbackQuery, state: FSMContext, api
                 logger.error(f"Failed to send photo {photo_path} to consultant. Error: {e}")
     else:
         await callback.message.answer("این بیمار عکسی ارسال نکرده است.")
+    await callback.message.answer(
+        "برای ادامه، روی دکمه زیر کلیک کنید:",
+        reply_markup=get_start_prescription_keyboard()
+    )
 
-    # ... ادامه جریان کاری در مراحل بعد (انتخاب بیماری و دارو) ...
-    # اینجا باید به مرحله بعدی برویم
-    await state.set_state(ConsultantFlow.viewing_patient_details)  # یک وضعیت میانی
+    await state.set_state(ConsultantFlow.viewing_patient_details)
     await callback.answer()
-    # در اینجا باید دکمه‌ای برای "شروع تجویز" نمایش دهیم که کاربر را به مرحله بعد ببرد.
-    # این کار را در پاسخ بعدی انجام خواهیم داد تا مراحل خیلی طولانی نشوند.
+
+
+@consultant_router.callback_query(ConsultantFlow.viewing_patient_details, F.data == "start_prescription")
+async def process_start_prescription(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
+    await callback.message.edit_text("در حال دریافت لیست انواع بیماری‌ها...")
+
+    disease_types = await api_client.get_all_disease_types()
+    if not disease_types:
+        await callback.message.edit_text("خطا: هیچ نوع بیماری در سیستم تعریف نشده است.")
+        await state.clear()
+        return
+
+    keyboard = create_disease_types_keyboard(disease_types)
+    await callback.message.edit_text(
+        "لطفاً دسته بندی بیماری را مشخص کنید:",
+        reply_markup=keyboard
+    )
+
+    # در FSM Storage یک مجموعه خالی برای داروهای انتخابی ایجاد می‌کنیم
+    await state.update_data(selected_drugs=set())
+    await state.set_state(ConsultantFlow.choosing_disease_type)
+    await callback.answer()
+
+
+# --- مرحله ۵: انتخاب نوع بیماری و نمایش داروها ---
+@consultant_router.callback_query(ConsultantFlow.choosing_disease_type, F.data.startswith("disease_type_"))
+async def process_disease_type_choice(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
+    disease_type_id = int(callback.data.split("_")[-1])
+    await state.update_data(selected_disease_type_id=disease_type_id)
+
+    await callback.message.edit_text(f"در حال دریافت لیست داروها برای دسته بندی انتخابی...")
+
+    drugs = await api_client.get_drugs_by_disease_type(disease_type_id)
+    if not drugs:
+        await callback.message.edit_text("هیچ دارویی برای این دسته بندی یافت نشد.")
+        # می‌توانیم به کاربر اجازه دهیم دسته دیگری را انتخاب کند
+        # فعلا فرآیند را متوقف می‌کنیم
+        await state.clear()
+        return
+
+    # ذخیره لیست کامل داروها برای این دسته در state
+    # این کار باعث می‌شود برای هر بار تیک زدن، دوباره از API دارو نگیریم
+    await state.update_data(available_drugs=drugs)
+
+    keyboard = create_drugs_keyboard(drugs)  # در ابتدا هیچ دارویی انتخاب نشده
+    await callback.message.edit_text(
+        "لطفاً دارو(های) مورد نظر را انتخاب کنید.\n"
+        "با هر کلیک، دارو به لیست شما اضافه یا از آن حذف می‌شود.",
+        reply_markup=keyboard
+    )
+
+    await state.set_state(ConsultantFlow.choosing_drugs)
+    await callback.answer()
+
+
+# --- مرحله ۶: انتخاب/حذف یک دارو (منطق تیک زدن) ---
+@consultant_router.callback_query(ConsultantFlow.choosing_drugs, F.data.startswith("drug_select_"))
+async def process_drug_selection(callback: CallbackQuery, state: FSMContext):
+    drug_id = int(callback.data.split("_")[-1])
+
+    data = await state.get_data()
+    selected_drugs: set[int] = data.get("selected_drugs", set())
+    available_drugs: list[dict] = data.get("available_drugs", [])
+
+    # اگر دارو در لیست بود، حذفش کن. اگر نبود، اضافه‌اش کن.
+    if drug_id in selected_drugs:
+        selected_drugs.remove(drug_id)
+    else:
+        selected_drugs.add(drug_id)
+
+    await state.update_data(selected_drugs=selected_drugs)
+
+    # کیبورد را با لیست به‌روز شده داروها دوباره بساز و ویرایش کن
+    new_keyboard = create_drugs_keyboard(available_drugs, selected_drugs)
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=new_keyboard)
+    except Exception as e:
+        logger.warning(f"Could not edit keyboard, probably unchanged. {e}")
+
+    await callback.answer()
+
+
+# --- مرحله ۷: کلیک روی "ثبت نهایی داروها" ---
+# این هندلر در گام بعدی که ثبت سفارش است، پیاده‌سازی خواهد شد.
+# فعلا فقط اطلاعات را نمایش می‌دهیم تا از صحت عملکرد مطمئن شویم.
+@consultant_router.callback_query(ConsultantFlow.choosing_drugs, F.data == "confirm_drugs")
+async def process_confirm_drugs(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected_drugs_ids = data.get("selected_drugs", set())
+
+    if not selected_drugs_ids:
+        await callback.answer("هیچ دارویی انتخاب نشده است!", show_alert=True)
+        return
+
+    # برای نمایش نام داروها، از لیست ذخیره شده استفاده می‌کنیم
+    available_drugs = data.get("available_drugs", [])
+    selected_drug_names = [
+        drug['name'] for drug in available_drugs if drug['id'] in selected_drugs_ids
+    ]
+
+    await callback.message.edit_text(
+        "داروهای زیر برای بیمار انتخاب شدند:\n\n"
+        "🔹 " + "\n🔹 ".join(selected_drug_names) +
+        "\n\nدر مرحله بعد، این سفارش ثبت خواهد شد و شما یک پیام نهایی برای بیمار ارسال خواهید کرد."
+    )
+
+    # اینجا وضعیت را به sending_final_message تغییر می‌دهیم
+    await state.set_state(ConsultantFlow.sending_final_message)
+    await callback.answer()

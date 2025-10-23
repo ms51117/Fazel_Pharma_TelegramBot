@@ -88,17 +88,21 @@ class APIClient:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
 
-            url = f"{self._base_url}/users/by-telegram-id/{telegram_id}"
+            url = f"{self._base_url}/user/by-telegram-id/{telegram_id}"
             response = await self._client.get(url, headers=headers)
 
             response.raise_for_status()
 
             user_data = response.json()
-            role_name = user_data.get("role", {}).get("roleName")
+            role_name = user_data.get("role_name")
+            logging.info(role_name)
 
             if role_name:
                 logging.info(f"Role for telegram_id {telegram_id} is '{role_name}'.")
                 return role_name
+            elif role_name is None:
+                logging.warning(f"User with telegram_id {telegram_id} found, but has no role name.")
+                return "Patient"
             else:
                 logging.warning(f"User with telegram_id {telegram_id} found, but has no role name.")
                 return "Patient"
@@ -169,15 +173,18 @@ class APIClient:
         try:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
-            url = "/message/unread-message-dates/"
+            url = f"{self._base_url}/message/unread-message-dates/"
+            logging.info(url)
 
             logging.info("Fetching unassigned patient dates from API.")
             response = await self._client.get(url, headers=headers)
             response.raise_for_status()
 
             dates = response.json()  # API باید لیستی از رشته‌های تاریخ را برگرداند
-            logging.info(f"Found {len(dates)} unassigned dates.")
-            return dates
+            dates_list = dates.get("dates", [])
+
+            logging.info(f"Found {len(dates_list)} unassigned dates.")
+            return dates_list
         except Exception as e:
             logging.error(f"Error fetching unassigned dates: {e}")
             return None
@@ -187,15 +194,17 @@ class APIClient:
         try:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
-            url = f"/message/unread-by-date/{date}"
+            url = f"{self._base_url}/message/unread-by-date/{date}"
 
             logging.info(f"Fetching patients for date: {date}")
             response = await self._client.get(url, headers=headers)
             response.raise_for_status()
 
             patients = response.json()  # API باید لیستی از دیکشنری‌های بیمار را برگرداند
-            logging.info(f"Found {len(patients)} patients for date {date}.")
-            return patients
+            patients_list = patients.get("patients", [])
+
+            logging.info(f"Found {len(patients_list)} patients for date {date}.")
+            return patients_list
         except Exception as e:
             logging.error(f"Error fetching patients for date {date}: {e}")
             return None
@@ -205,7 +214,7 @@ class APIClient:
         try:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
-            url = f"/patient/{patient_id}"
+            url = f"{self._base_url}/patient/{patient_id}"
 
             logging.info(f"Fetching details for patient_id: {patient_id}")
             response = await self._client.get(url, headers=headers)
@@ -220,6 +229,41 @@ class APIClient:
 
     # -----------------------------------------------------
 
+    async def get_all_disease_types(self) -> list[dict] | None:
+        """Fetches all available disease types from the API."""
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{self._base_url}/disease/"
+
+            logging.info("Fetching all disease types from API.")
+            response = await self._client.get(url, headers=headers)
+            response.raise_for_status()
+
+            disease_types = response.json()
+            logging.info(f"Found {len(disease_types)} disease types.")
+            return disease_types
+        except Exception as e:
+            logging.error(f"Error fetching disease types: {e}")
+            return None
+
+    async def get_drugs_by_disease_type(self, disease_type_id: int) -> list[dict] | None:
+        """Fetches drugs for a specific disease type ID."""
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{self._base_url}/drugs/by-disease-type/{disease_type_id}"
+
+            logging.info(f"Fetching drugs for disease_type_id: {disease_type_id}")
+            response = await self._client.get(url, headers=headers)
+            response.raise_for_status()
+
+            drugs = response.json()
+            logging.info(f"Found {len(drugs)} drugs for disease type {disease_type_id}.")
+            return drugs
+        except Exception as e:
+            logging.error(f"Error fetching drugs for disease type {disease_type_id}: {e}")
+            return None
 
     async def close(self):
         """

@@ -11,8 +11,11 @@ from aiogram.types import Message, CallbackQuery
 from .states import PatientRegistration
 from .keyboards import get_start_keyboard, get_gender_keyboard, get_photo_confirmation_keyboard
 from app.core.API_Client import APIClient
+from app.filters.role_filter import RoleFilter
 
 patient_router = Router()
+logger = logging.getLogger(__name__)
+
 
 
 # ... (تمام handler های دیگر از process_start_registration تا ask_for_another_photo بدون تغییر باقی می‌مانند) ...
@@ -36,7 +39,7 @@ async def process_full_name(message: Message, state: FSMContext):
 # --- دریافت جنسیت و درخواست سن ---
 @patient_router.callback_query(PatientRegistration.waiting_for_gender, F.data.in_({"gender_male", "gender_female"}))
 async def process_gender(callback: CallbackQuery, state: FSMContext):
-    gender_value = "MALE" if callback.data == "gender_male" else "FEMALE"
+    gender_value = "male" if callback.data == "gender_male" else "female"
     await state.update_data(gender=gender_value)
     await state.set_state(PatientRegistration.waiting_for_age)
     await callback.message.answer("لطفاً سن خود را به عدد وارد کنید (مثال: 35):")
@@ -165,11 +168,15 @@ async def finish_registration(
         "weight": user_data.get("weight"),
         "height": user_data.get("height"),
         "telegram_id": str(telegram_id),
-        "disease_description": user_data.get("disease_description"),
+        "specific_diseases": user_data.get("disease_description"),
         "photo_paths": saved_photo_paths
     }
 
     success = await api_client.create_patient_profile(final_data_to_send)
+
+    message_to_send = {
+
+    }
 
     await state.clear()
 
@@ -205,6 +212,7 @@ async def handle_unexpected_text_while_waiting_for_photo(message: Message):
 # --- هندلر پیش‌فرض برای تمام پیام‌های دیگر (شامل /start) ---
 @patient_router.message(F.text)
 async def patient_default_handler(message: Message, state: FSMContext):
+
     current_state = await state.get_state()
     if current_state is not None:
         await message.answer("لطفاً اطلاعات خواسته شده را به درستی وارد کنید.")
