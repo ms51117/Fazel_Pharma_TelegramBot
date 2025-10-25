@@ -274,7 +274,7 @@ class APIClient:
         try:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
-            url = f"{self._base_url}/drugs/by-disease-type/{disease_type_id}"
+            url = f"{self._base_url}/drug/read-drug-by-type/{disease_type_id}"
 
             logging.info(f"Fetching drugs for disease_type_id: {disease_type_id}")
             response = await self._client.get(url, headers=headers)

@@ -4,7 +4,10 @@ import logging
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, InputFile
+from aiogram.types import Message, CallbackQuery, InputFile, InputMediaPhoto
+from aiogram.types import Message, CallbackQuery, FSInputFile # <--- این را اضافه کنید
+from aiogram.fsm.context import FSMContext
+
 
 from app.core.API_Client import APIClient
 from .states import ConsultantFlow
@@ -102,17 +105,22 @@ async def process_patient_choice(callback: CallbackQuery, state: FSMContext, api
     # ارسال عکس‌ها
     photo_paths = patient_details.get("photo_paths", [])
     if photo_paths:
-        await callback.message.answer("🖼️ **تصاویر ارسالی بیمار:**")
-        for photo_path in photo_paths:
-            try:
-                # چون مسیر مطلق را ذخیره کردیم، می‌توانیم مستقیما فایل را بخوانیم
-                photo = InputFile(photo_path)
-                await callback.message.answer_photo(photo)
-            except Exception as e:
-                await callback.message.answer(f"⚠️ خطا در بارگذاری عکس: `{photo_path}`")
-                logger.error(f"Failed to send photo {photo_path} to consultant. Error: {e}")
+        try:
+            # --- اصلاح اصلی اینجاست ---
+            # تبدیل لیست مسیرهای فایل به لیست آبجکت‌های FSInputFile
+            media_group = [InputMediaPhoto(media=FSInputFile(path)) for path in photo_paths]
+
+
+
+            await callback.message.answer_media_group(media=media_group)
+
+        except Exception as e:
+            # لاگ خطا را بهبود می‌بخشیم
+            logger.error(f"Failed to send media group for patient {patient_id}. Error: {e}")
     else:
+        # اگر عکسی وجود نداشت، فقط متن را بفرست
         await callback.message.answer("این بیمار عکسی ارسال نکرده است.")
+
     await callback.message.answer(
         "برای ادامه، روی دکمه زیر کلیک کنید:",
         reply_markup=get_start_prescription_keyboard()
@@ -178,7 +186,7 @@ async def process_disease_type_choice(callback: CallbackQuery, state: FSMContext
 # --- مرحله ۶: انتخاب/حذف یک دارو (منطق تیک زدن) ---
 @consultant_router.callback_query(ConsultantFlow.choosing_drugs, F.data.startswith("drug_select_"))
 async def process_drug_selection(callback: CallbackQuery, state: FSMContext):
-    drug_id = int(callback.data.split("_")[-1])
+    drug_id = int(callback.data.split("_")[2])
 
     data = await state.get_data()
     selected_drugs: set[int] = data.get("selected_drugs", set())
@@ -218,7 +226,7 @@ async def process_confirm_drugs(callback: CallbackQuery, state: FSMContext):
     # برای نمایش نام داروها، از لیست ذخیره شده استفاده می‌کنیم
     available_drugs = data.get("available_drugs", [])
     selected_drug_names = [
-        drug['name'] for drug in available_drugs if drug['id'] in selected_drugs_ids
+        drug['drug_pname'] for drug in available_drugs if drug['drugs_id'] in selected_drugs_ids
     ]
 
     await callback.message.edit_text(

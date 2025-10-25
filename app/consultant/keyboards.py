@@ -1,7 +1,7 @@
 # app/consultant/keyboards.py
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
 def create_dates_keyboard(dates: list[str]) -> InlineKeyboardMarkup:
@@ -51,34 +51,44 @@ def create_disease_types_keyboard(disease_types: list[dict]) -> InlineKeyboardMa
     return builder.as_markup()
 
 
-def create_drugs_keyboard(
-        drugs: list[dict],
-        selected_drugs: set[int] = None
-) -> InlineKeyboardMarkup:
+def create_drugs_keyboard(drugs: list[dict], selected_drug_ids: set[int] = None):
     """
-    Creates a multi-selectable keyboard for drugs.
-    A checkmark (✅) is added to selected drugs.
+    Creates a dynamic keyboard for selecting drugs.
+    'selected_drug_ids' is a set of IDs of already selected drugs.
     """
-    if selected_drugs is None:
-        selected_drugs = set()
-
     builder = InlineKeyboardBuilder()
+    if selected_drug_ids is None:
+        selected_drug_ids = set()
+
     for drug in drugs:
-        drug_id = drug['id']
-        drug_name = drug['name']
+        drug_id = drug['drugs_id']
+        drug_name = drug['drug_pname']
 
-        # اگر دارو قبلا انتخاب شده، یک تیک کنارش بگذار
-        text = f"✅ {drug_name}" if drug_id in selected_drugs else drug_name
+        if drug_id in selected_drug_ids:
+            text = f"✅ {drug_name}"
+        else:
+            text = drug_name
 
-        builder.button(text=text, callback_data=f"drug_select_{drug_id}")
-
-    builder.adjust(2)  # نمایش داروها در دو ستون
-
-    # اضافه کردن دکمه "ثبت نهایی داروها"
-    # این دکمه فقط در صورتی نمایش داده می‌شود که حداقل یک دارو انتخاب شده باشد
-    if selected_drugs:
         builder.row(
-            builder.button(text="ثبت نهایی داروها 💊", callback_data="confirm_drugs")
+            InlineKeyboardButton(
+                text=text,
+                callback_data=f"drug_select_{drug_id}"
+            )
         )
+
+    # --- اصلاح اصلی اینجاست ---
+
+    # دکمه تایید نهایی و بازگشت را در یک ردیف قرار می‌دهیم
+    builder.row(
+        InlineKeyboardButton(
+            text="بازگشت",
+            callback_data="back_to_diseases"
+        ),
+        InlineKeyboardButton(
+            text="تایید و ادامه",
+            callback_data="confirm_drugs"
+        )
+    )
+    # --------------------------
 
     return builder.as_markup()
