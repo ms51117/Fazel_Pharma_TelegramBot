@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Union, List, Dict
 
 import httpx
 from httpx import AsyncClient, HTTPStatusError
@@ -119,48 +119,70 @@ class APIClient:
             logging.error(f"Unexpected error getting user role for {telegram_id}: {e}")
             return "Patient"
 
-    async def create_patient_profile(self, patient_data: dict) -> bool:
+    async def create_patient_profile(self, patient_data: dict) -> Optional[Union[int, str]]:
         """
-        Sends patient registration data to the backend API.
+        Sends patient registration data to the backend API and returns the new patient's ID.
 
         Args:
             patient_data: A dictionary matching the PatientCreate schema.
 
         Returns:
-            True if creation was successful (201 Created), False otherwise.
+            The patient_id (int, str, or UUID) if creation was successful.
+            None if any error occurred.
         """
         try:
             token = await self.login_check()
-            headers = {"Authorization": f"Bearer {token}"}
+            if not token:
+                logging.error("Authentication failed. Cannot create patient profile.")
+                return None  # اگر توکن دریافت نشد، ادامه نده
 
-            # آدرس Endpoint بر اساس فایل patient.py در بک‌اند شما
+            headers = {"Authorization": f"Bearer {token}"}
             url = f"{self._base_url}/patient/"
 
-
             logging.info(f"Sending new patient profile to API for telegram_id: {patient_data.get('user_telegram_id')}")
-            logging.info(url)
+
+            # ارسال درخواست به API
             response = await self._client.post(url, headers=headers, json=patient_data)
-            print(response)
 
-            # بررسی کد وضعیت؛ 201 یعنی با موفقیت ساخته شده
+            # بررسی دقیق کد وضعیت؛ فقط 201 به معنای موفقیت است
             if response.status_code == 201:
-                logging.info(
-                    f"Successfully created patient profile for telegram_id: {patient_data.get('user_telegram_id')}")
-                return True
+                # 1. پاسخ را به فرمت JSON تبدیل می‌کنیم
+                response_data = response.json()
 
-            # برای سایر کدها، خطا را لاگ می‌گیریم و False برمی‌گردانیم
-            logging.error(f"Failed to create patient profile. Status: {response.status_code}, Response: {response.text}")
-            # برای اینکه متوجه خطاهای احتمالی مثل 400 (پروفایل تکراری) شویم
+                # 2. مقدار 'patient_id' را از دیکشنری JSON استخراج می‌کنیم
+                patient_id = response_data.get("patient_id")
+
+                if patient_id:
+                    logging.info(f"Successfully created patient profile with ID: {patient_id}")
+                    # 3. به جای True، مقدار استخراج شده را برمی‌گردانیم
+                    return patient_id
+                else:
+                    # اگر کد 201 بود اما patient_id در پاسخ وجود نداشت، این یک خطای غیرمنتظره در API است
+                    logging.error(
+                        f"API returned 201 Created but 'patient_id' is missing in the response. Response: {response.text}")
+                    return None
+
+            # برای سایر کدها، خطا را لاگ می‌گیریم و None برمی‌گردانیم
+            logging.error(
+                f"Failed to create patient profile. Status: {response.status_code}, Response: {response.text}")
+
+            # این خط برای دیباگ کردن بسیار مفید است. اگر API خطایی مثل 400 یا 500 برگرداند،
+            # این خط یک استثنا (Exception) ایجاد می‌کند که در بلوک except گرفته می‌شود.
             response.raise_for_status()
-            return False
+            return None  # این خط در عمل اجرا نمی‌شود چون خط بالا استثنا ایجاد می‌کند، اما برای خوانایی خوب است
 
         except httpx.HTTPStatusError as e:
-            # این خطا در صورت وجود کدهای 4xx یا 5xx رخ می‌دهد
+            # این خطا زمانی رخ می‌دهد که response.raise_for_status() فراخوانی شود و کد وضعیت 4xx یا 5xx باشد
             logging.error(f"HTTP error creating patient profile: {e.response.status_code} - {e.response.text}")
-            return False
+            return None
+        except httpx.RequestError as e:
+            # این خطا برای مشکلات شبکه مثل عدم اتصال به سرور است
+            logging.error(f"A network error occurred while creating patient profile: {e}")
+            return None
         except Exception as e:
-            logging.error(f"An unexpected error occurred while creating patient profile: {e}")
-            return False
+            # گرفتن هر خطای پیش‌بینی نشده دیگر
+            logging.error(f"An unexpected error occurred while creating patient profile: {e}", exc_info=True)
+            return None
 
     # ^^^^^^ پایان متد جدید ^^^^^^
 
@@ -263,6 +285,73 @@ class APIClient:
             return drugs
         except Exception as e:
             logging.error(f"Error fetching drugs for disease type {disease_type_id}: {e}")
+            return None
+    # ---------------- create message --------------------------------
+    async def create_message(
+            self,
+            patient_id: int,
+            user_id: Optional[int] = None,
+            message_content: Optional[str] = None,
+            messages_sender: bool = True,
+            attachments: Optional[List[str]] = None
+    ) -> Optional[Dict]:
+        """
+        یک پیام/تیکت جدید در سیستم ایجاد می‌کند. (نسخه کامل و انعطاف‌پذیر)
+
+        این متد می‌تواند برای سناریوهای مختلف استفاده شود:
+        1. ایجاد پیام اولیه توسط بیمار (بدون user_id و بدون پیوست).
+        2. ارسال پیام متنی توسط بیمار یا مشاور.
+        3. ارسال پیام حاوی یک یا چند فایل پیوست (با یا بدون متن).
+
+        Args:
+            patient_id (int): شناسه بیمار که این پیام به او تعلق دارد.
+            user_id (Optional[int]): شناسه مشاور. در پیام‌های اولیه بیمار، این مقدار None است.
+            message_content (Optional[str]): محتوای متنی پیام.
+            messages_sender (bool): جهت پیام. True = از طرف بیمار/سیستم، False = از طرف مشاور.
+            attachments (Optional[List[str]]): لیستی از مسیرهای فایل‌های پیوست.
+
+        Returns:
+            Optional[Dict]: دیکشنری حاوی اطلاعات پیام ایجاد شده در صورت موفقیت، در غیر این صورت None.
+        """
+        try:
+            token = await self.login_check()
+            if not token:
+                logging.error("Authentication failed. Cannot create message.")
+                return None
+
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{self._base_url}/message/"
+
+            # ساختار payload دقیقاً مطابق با اسکیمای FastAPI/Swagger
+            payload = {
+                "patient_id": patient_id,
+                "user_id": user_id,  # می‌تواند None باشد
+                "messages": message_content,  # می‌تواند None باشد
+                "messages_sender": messages_sender,
+                "messages_seen": False,  # پیام جدید همیشه خوانده نشده است
+                "attachment_path": attachments if attachments else None  # اگر None بود، لیست خالی ارسال شود
+            }
+
+            logging.info(f"Sending request to create message with payload: {payload}")
+
+            response = await self._client.post(url, headers=headers, json=payload)
+
+            if response.status_code == 201:  # 201 Created
+                created_message = response.json()
+                logging.info(f"Successfully created message with ID: {created_message.get('message_id')}")
+                return created_message
+            else:
+                # اگر کد وضعیت خطا بود، آن را لاگ و مدیریت کن
+                logging.error(f"Failed to create message. Status: {response.status_code}, Response: {response.text}")
+                response.raise_for_status()  # این خط جزئیات بیشتری از خطا را نمایش می‌دهد
+                return None
+
+        except httpx.HTTPStatusError as e:
+            logging.error(f"HTTP status error while creating message for patient {patient_id}: {e}")
+            return None
+        except Exception as e:
+            logging.error(f"An unexpected error occurred while creating message for patient {patient_id}: {e}",
+                          exc_info=True)
             return None
 
     async def close(self):

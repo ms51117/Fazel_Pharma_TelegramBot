@@ -147,7 +147,7 @@ async def process_start_prescription(callback: CallbackQuery, state: FSMContext,
 # --- مرحله ۵: انتخاب نوع بیماری و نمایش داروها ---
 @consultant_router.callback_query(ConsultantFlow.choosing_disease_type, F.data.startswith("disease_type_"))
 async def process_disease_type_choice(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
-    disease_type_id = int(callback.data.split("_")[-1])
+    disease_type_id = int(callback.data.split("_")[2])
     await state.update_data(selected_disease_type_id=disease_type_id)
 
     await callback.message.edit_text(f"در حال دریافت لیست داروها برای دسته بندی انتخابی...")

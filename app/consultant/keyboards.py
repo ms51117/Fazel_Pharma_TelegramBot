@@ -39,7 +39,14 @@ def create_disease_types_keyboard(disease_types: list[dict]) -> InlineKeyboardMa
     """Creates a keyboard for selecting a disease type."""
     builder = InlineKeyboardBuilder()
     for dtype in disease_types:
-        builder.button(text=dtype['name'], callback_data=f"disease_type_{dtype['id']}")
+        # VVVVVV  تغییرات اصلی اینجا اعمال شده است  VVVVVV
+        # از 'diseases_name' برای متن دکمه استفاده می‌کنیم
+        button_text = dtype.get('diseases_name', 'Unnamed Disease')
+        # از 'diseases_type_id' برای callback_data استفاده می‌کنیم
+        disease_id = dtype.get('diseases_type_id')
+
+        if disease_id is not None:
+            builder.button(text=button_text, callback_data=f"disease_type_{disease_id}")
     builder.adjust(2)
     return builder.as_markup()
 

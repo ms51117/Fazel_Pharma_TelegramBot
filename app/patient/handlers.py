@@ -130,6 +130,8 @@ async def finish_registration(
 
     user_data = await state.get_data()
     telegram_id = callback.from_user.id
+    full_name = user_data.get("full_name", "کاربر") # <-- CHANGE: گرفتن نام برای پیام خوش‌آمدگویی
+
 
     saved_photo_paths = []
 
@@ -172,26 +174,53 @@ async def finish_registration(
         "photo_paths": saved_photo_paths
     }
 
-    success = await api_client.create_patient_profile(final_data_to_send)
+    new_patient_id = await api_client.create_patient_profile(final_data_to_send)
 
-    message_to_send = {
-
-    }
 
     await state.clear()
 
-    if success:
-        response_text = (
-            "✅ فرآیند ثبت‌نام شما با موفقیت به پایان رسید و پرونده شما در سیستم ذخیره شد.\n\n"
-            f"<b>تعداد عکس‌های ذخیره شده:</b> {len(saved_photo_paths)}\n\n"
-            "کارشناسان ما به زودی پرونده شما را بررسی خواهند کرد."
-        )
-    else:
-        response_text = (
-            "❌ متاسفانه در هنگام ذخیره اطلاعات شما در سرور مشکلی پیش آمد.\n\n"
-            "ممکن است شما قبلاً یک پرونده ثبت کرده باشید. در غیر این صورت، لطفاً چند دقیقه دیگر دوباره امتحان کنید یا با پشتیبانی تماس بگیرید."
+    if new_patient_id:
+        # ثبت پروفایل موفقیت‌آمیز بود
+        logging.info(f"Patient profile created with ID: {new_patient_id}. Now creating initial message.")
+
+        # محتوای پیام اولیه‌ای که در دیتابیس ذخیره می‌شود
+        initial_message_content = (
+            f"پرونده جدید برای بیمار «{full_name}» با موفقیت ثبت شد. "
+            "این یک پیام خودکار برای نشانه‌گذاری شروع تعامل است."
         )
 
+        # فراخوانی تابع create_message برای ثبت این رویداد
+        message_creation_result = await api_client.create_message(
+            patient_id=new_patient_id,
+            message_content=initial_message_content,
+            messages_sender=True  # ارسال از طرف بیمار/سیستم
+            # user_id و attachments به طور پیش‌فرض None هستند
+        )
+        if message_creation_result:
+            logging.info(f"Initial system message created successfully for patient_id: {new_patient_id}")
+        else:
+            logging.warning(
+                f"Patient profile was created ({new_patient_id}), but failed to create the initial system message.")
+
+
+
+        # آماده‌سازی پیام برای نمایش به کاربر در تلگرام
+        response_text = (
+            f"✅ {full_name} عزیز، فرآیند ثبت‌نام شما با موفقیت به پایان رسید.\n\n"
+            "پرونده شما در سیستم ذخیره شد و یک تیکت پشتیبانی برای شما ایجاد گردید.\n\n"
+            f"<b>تعداد عکس‌های ذخیره شده:</b> {len(saved_photo_paths)}\n\n"
+            "کارشناسان ما به زودی پرونده شما را بررسی کرده و از طریق همین ربات به شما پاسخ خواهند داد."
+        )
+    else:
+        # ثبت پروفایل با خطا مواجه شد
+        logging.error(f"Failed to create patient profile for telegram_id: {telegram_id}. API returned None.")
+        response_text = (
+            "❌ متاسفانه در هنگام ذخیره اطلاعات شما در سرور مشکلی پیش آمد.\n\n"
+            "ممکن است شما قبلاً یک پرونده با این شماره تلگرام ثبت کرده باشید. "
+            "در غیر این صورت، لطفاً چند دقیقه دیگر دوباره امتحان کنید یا با پشتیبانی تماس بگیرید."
+        )
+
+        # <-- CHANGE 4: ارسال پیام نهایی به کاربر
     await callback.message.edit_text(response_text, parse_mode='HTML')
     await callback.answer()
 
