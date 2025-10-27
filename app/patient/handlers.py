@@ -12,6 +12,7 @@ from .states import PatientRegistration
 from .keyboards import get_start_keyboard, get_gender_keyboard, get_photo_confirmation_keyboard
 from app.core.API_Client import APIClient
 from app.filters.role_filter import RoleFilter
+from app.core.enums import PatientStatus
 
 patient_router = Router()
 logger = logging.getLogger(__name__)
@@ -181,26 +182,12 @@ async def finish_registration(
 
     if new_patient_id:
         # ثبت پروفایل موفقیت‌آمیز بود
-        logging.info(f"Patient profile created with ID: {new_patient_id}. Now creating initial message.")
+        logging.info(f"Patient profile created with ID: {new_patient_id}. Now changing patient status.")
 
-        # محتوای پیام اولیه‌ای که در دیتابیس ذخیره می‌شود
-        initial_message_content = (
-            f"پرونده جدید برای بیمار «{full_name}» با موفقیت ثبت شد. "
-            "این یک پیام خودکار برای نشانه‌گذاری شروع تعامل است."
-        )
-
-        # فراخوانی تابع create_message برای ثبت این رویداد
-        message_creation_result = await api_client.create_message(
-            patient_id=new_patient_id,
-            message_content=initial_message_content,
-            messages_sender=True  # ارسال از طرف بیمار/سیستم
-            # user_id و attachments به طور پیش‌فرض None هستند
-        )
-        if message_creation_result:
-            logging.info(f"Initial system message created successfully for patient_id: {new_patient_id}")
+        if not await api_client.update_patient_status(telegram_id, PatientStatus.AWAITING_CONSULTATION):
+            logging.info(f"Initial system change status successfully for patient_id: {new_patient_id}")
         else:
-            logging.warning(
-                f"Patient profile was created ({new_patient_id}), but failed to create the initial system message.")
+            logging.warning(f"Patient profile was created ({new_patient_id}), but failed to change patient status.")
 
 
 

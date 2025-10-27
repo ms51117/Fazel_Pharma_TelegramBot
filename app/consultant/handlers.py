@@ -33,7 +33,7 @@ async def consultant_start(message: Message, state: FSMContext, api_client: APIC
 
     await message.answer("در حال دریافت لیست تاریخ‌های نیازمند بررسی...")
 
-    unassigned_dates = await api_client.get_unassigned_dates()
+    unassigned_dates = await api_client.get_waiting_for_consultation_dates()
 
     if not unassigned_dates:
         await message.answer("در حال حاضر هیچ بیماری در صف انتظار برای بررسی وجود ندارد. ✅")
@@ -55,7 +55,7 @@ async def process_date_choice(callback: CallbackQuery, state: FSMContext, api_cl
 
     await callback.message.edit_text(f"⏳ در حال دریافت لیست بیماران برای تاریخ {date}...")
 
-    patients = await api_client.get_patients_by_date(date)
+    patients = await api_client.get_waiting_for_consultation_patients_by_date(date)
 
     if not patients:
         await callback.message.edit_text(f"خطا: بیماری برای تاریخ {date} یافت نشد. لطفاً دوباره تلاش کنید.")
@@ -274,7 +274,7 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
 
         order_id = new_order.get('order_id')
 
-        if not await api_client.update_patient_status(patient_telegram_id,PatientStatus.AWAITING_INVOICE_APPROVAL):
+        if not (await api_client.update_patient_status(patient_telegram_id,PatientStatus.AWAITING_INVOICE_APPROVAL)):
             raise ValueError("خطا در تغییر وضعیت.")
 
 

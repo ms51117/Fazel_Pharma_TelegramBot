@@ -190,12 +190,12 @@ class APIClient:
 
     # -------------------------------------------------------
 
-    async def get_unassigned_dates(self) -> list[str] | None:
+    async def get_waiting_for_consultation_dates(self) -> list[str] | None:
         """Fetches dates with unassigned patients."""
         try:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
-            url = f"{self._base_url}/message/unread-message-dates/"
+            url = f"{self._base_url}/patient/waiting-for-consultation-dates/"
             logging.info(url)
 
             logging.info("Fetching unassigned patient dates from API.")
@@ -211,12 +211,12 @@ class APIClient:
             logging.error(f"Error fetching unassigned dates: {e}")
             return None
 
-    async def get_patients_by_date(self, date: str) -> list[dict] | None:
+    async def get_waiting_for_consultation_patients_by_date(self, date: str) -> list[dict] | None:
         """Fetches patients for a specific unassigned date."""
         try:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
-            url = f"{self._base_url}/message/unread-by-date/{date}"
+            url = f"{self._base_url}/patient/awaiting-for-consultation-by-date/{date}"
 
             logging.info(f"Fetching patients for date: {date}")
             response = await self._client.get(url, headers=headers)
@@ -446,10 +446,10 @@ class APIClient:
             headers = {"Authorization": f"Bearer {token}"}
             url = f"{self._base_url}/patient/{patient_telegram_id}"  # مطمئن شوید پیشوند /api/v1 یا معادل آن در base_url هست
 
-            async with self._client.patch(url, headers=headers, json=patient_data) as response:
-                response.raise_for_status()
-                logging.info(f"Successfully updated patient {patient_telegram_id} with data: {patient_data}")
-                return True
+            response = await  self._client.patch(url, headers=headers, json=patient_data)
+            response.raise_for_status()
+            logging.info(f"Successfully updated patient {patient_telegram_id} with data: {patient_data}")
+            return True
         except Exception as e:
             logging.error(f"Error updating patient {patient_telegram_id}: {e}")
             return False
