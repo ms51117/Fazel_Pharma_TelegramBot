@@ -7,7 +7,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InputFile, InputMediaPhoto
 from aiogram.types import Message, CallbackQuery, FSInputFile # <--- این را اضافه کنید
 from aiogram.fsm.context import FSMContext
+from decimal import Decimal # <--- این خط را اضافه کنید
 
+from app.core.enums import PatientStatus  # <-- Enum را وارد کنید
 
 from app.core.API_Client import APIClient
 from .states import ConsultantFlow
@@ -78,7 +80,7 @@ async def process_patient_choice(callback: CallbackQuery, state: FSMContext, api
 
     await callback.message.edit_text(f"🔍 در حال دریافت اطلاعات کامل بیمار با شناسه {patient_id}...")
 
-    patient_details = await api_client.get_patient_details_by_id(patient_id)
+    patient_details = await api_client.get_patient_details_by_telegram_id(patient_id)
 
     if not patient_details:
         await callback.message.edit_text("خطا: اطلاعات این بیمار یافت نشد!")
@@ -215,26 +217,106 @@ async def process_drug_selection(callback: CallbackQuery, state: FSMContext):
 # این هندلر در گام بعدی که ثبت سفارش است، پیاده‌سازی خواهد شد.
 # فعلا فقط اطلاعات را نمایش می‌دهیم تا از صحت عملکرد مطمئن شویم.
 @consultant_router.callback_query(ConsultantFlow.choosing_drugs, F.data == "confirm_drugs")
-async def process_confirm_drugs(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    selected_drugs_ids = data.get("selected_drugs", set())
+async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_client: APIClient):  # <--- user_id مشاور از میدل‌ور اضافه شد
+    await callback.answer("در حال ثبت تجویز...", show_alert=False)
 
+    data = await state.get_data()
+    selected_drugs_ids = data.get('selected_drugs')
+    patient_telegram_id = data.get('selected_patient_id')  # <--- نام state را از مرحله ۳ چک کنید (selected_patient_id)
+    patient_full_name = data.get('patient_full_name', 'بیمار')  # <--- نام بیمار را هم از state می‌خوانیم
+    consultant_telegram_id = callback.from_user.id
+
+
+    # -----------------------------------------
+    consultant_details = await api_client.get_user_details_by_telegram_id(consultant_telegram_id)
+    if not consultant_details:
+        await callback.message.answer("خطا: اطلاعات شما به عنوان مشاور در سیستم یافت نشد.")
+        return
+    else:
+        user_id = int(consultant_details['user_id'])
+
+    # گرفتن اطلاعات کامل بیمار با استفاده از متد جدید
+    patient_details = await api_client.get_patient_details_by_telegram_id(patient_telegram_id)
+    if not patient_details:
+        await callback.message.answer(f"خطا: اطلاعات بیمار با شناسه تلگرام {patient_telegram_id} در سیستم یافت نشد.")
+        return
+    else:
+        patient_id = int(patient_details['patient_id'])
+    # -------------------------------------------
+
+
+    # ۱. اعتبارسنجی داده‌های موجود در state
     if not selected_drugs_ids:
-        await callback.answer("هیچ دارویی انتخاب نشده است!", show_alert=True)
+        await callback.answer("خطا: هیچ دارویی انتخاب نشده است!", show_alert=True)
         return
 
-    # برای نمایش نام داروها، از لیست ذخیره شده استفاده می‌کنیم
-    available_drugs = data.get("available_drugs", [])
-    selected_drug_names = [
-        drug['drug_pname'] for drug in available_drugs if drug['drugs_id'] in selected_drugs_ids
-    ]
+    if not patient_id or not user_id:
+        await callback.message.edit_text(
+            "❌ **خطای سیستمی:** اطلاعات بیمار یا مشاور یافت نشد.\n"
+            "لطفاً فرآیند را از ابتدا شروع کنید."
+        )
+        await state.clear()
+        return
 
-    await callback.message.edit_text(
-        "داروهای زیر برای بیمار انتخاب شدند:\n\n"
-        "🔹 " + "\n🔹 ".join(selected_drug_names) +
-        "\n\nدر مرحله بعد، این سفارش ثبت خواهد شد و شما یک پیام نهایی برای بیمار ارسال خواهید کرد."
-    )
+    try:
+        # ۲. فراخوانی API برای ساخت سفارش
+        # تبدیل set به list چون JSON از set پشتیبانی نمی‌کند
+        drug_ids_list = list(selected_drugs_ids)
 
-    # اینجا وضعیت را به sending_final_message تغییر می‌دهیم
-    await state.set_state(ConsultantFlow.sending_final_message)
-    await callback.answer()
+        new_order = await api_client.create_order(
+            patient_id=patient_id,
+            user_id=user_id,
+            drug_ids=drug_ids_list
+        )
+
+        if not new_order or 'order_id' not in new_order:
+            raise ValueError("پاسخ نامعتبر از API هنگام ساخت سفارش.")
+
+        order_id = new_order.get('order_id')
+
+        if not await api_client.update_patient_status(patient_telegram_id,PatientStatus.AWAITING_INVOICE_APPROVAL):
+            raise ValueError("خطا در تغییر وضعیت.")
+
+
+        # ۳. ساخت پیام موفقیت‌آمیز برای نمایش به مشاور (شبیه فاکتور)
+        available_drugs = data.get('available_drugs', [])
+        selected_drugs_details = [
+            drug for drug in available_drugs if drug['drugs_id'] in selected_drugs_ids
+        ]
+
+        total_price = sum(Decimal(d['price']) for d in selected_drugs_details)
+
+        # ساخت متن لیست داروها
+        prescription_text = ""
+        for i, drug in enumerate(selected_drugs_details, 1):
+            # تبدیل قیمت به عدد صحیح و فرمت با کاما
+            price_formatted = f"{int(Decimal(drug['price'])):,}"
+            prescription_text += f"{i}. {drug['drug_pname']} - {price_formatted} ریال\n"
+
+        total_price_formatted = f"{int(total_price):,}"
+
+        success_message = (
+            f"✅ **تجویز با موفقیت ثبت شد.**\n\n"
+            f"📄 **شماره سفارش:** `{order_id}`\n"
+            f"👤 **برای بیمار:** {patient_full_name}\n\n"
+            f"📋 **لیست داروها:**\n"
+            f"{prescription_text}\n"
+            f"---------------------------\n"
+            f"💰 **جمع کل:** **{total_price_formatted} ریال**\n\n"
+            f"ℹ️ وضعیت سفارش: `ایجاد شده` (created)\n"
+            f"این سفارش جهت تایید نهایی به ادمین سیستم ارجاع داده شد."
+        )
+
+        await callback.message.edit_text(success_message, parse_mode="Markdown")
+
+        # ۴. پایان فلو و پاک کردن state
+        await state.clear()
+
+    except Exception as e:
+        logging.error(f"Error during order confirmation process: {e}", exc_info=True)
+        await callback.message.edit_text(
+            "❌ **خطا در ثبت تجویز!**\n\n"
+            "مشکلی در ارتباط با سرور پیش آمده یا داده‌های ارسالی نامعتبر است. "
+            "لطفاً لحظاتی بعد دوباره تلاش کنید یا با پشتیبانی تماس بگیرید."
+        )
+        await state.clear()

@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Optional, Union, List, Dict
+from typing import Optional, Union, List, Dict,Any
 
 import httpx
 from httpx import AsyncClient, HTTPStatusError
@@ -88,7 +88,7 @@ class APIClient:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
 
-            url = f"{self._base_url}/user/by-telegram-id/{telegram_id}"
+            url = f"{self._base_url}/user/role-by-telegram-id/{telegram_id}"
             response = await self._client.get(url, headers=headers)
 
             response.raise_for_status()
@@ -231,25 +231,46 @@ class APIClient:
             logging.error(f"Error fetching patients for date {date}: {e}")
             return None
 
-    async def get_patient_details_by_id(self, patient_id: int) -> dict | None:
+    async def get_patient_details_by_telegram_id(self, telegram_id: int) -> dict | None:
         """Fetches full details of a single patient by their database ID."""
         try:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
-            url = f"{self._base_url}/patient/{patient_id}"
+            url = f"{self._base_url}/patient/{telegram_id}"
 
-            logging.info(f"Fetching details for patient_id: {patient_id}")
+            logging.info(f"Fetching details for telegram_id: {telegram_id}")
             response = await self._client.get(url, headers=headers)
             response.raise_for_status()
 
             patient_details = response.json()
-            logging.info(f"Successfully fetched details for patient_id: {patient_id}")
+            logging.info(f"Successfully fetched details for telegram_id: {telegram_id}")
             return patient_details
         except Exception as e:
-            logging.error(f"Error fetching patient details for patient_id {patient_id}: {e}")
+            logging.error(f"Error fetching patient details for telegram_id {telegram_id}: {e}")
             return None
 
     # -----------------------------------------------------
+
+    async def get_user_details_by_telegram_id(self, telegram_id: int) -> dict | None:
+        """Fetches full details of a single patient by their database ID."""
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{self._base_url}/user/read-by-telegram-id/{telegram_id}"
+
+            logging.info(f"Fetching details for telegram_id: {telegram_id}")
+            response = await self._client.get(url, headers=headers)
+            response.raise_for_status()
+
+            patient_details = response.json()
+            logging.info(f"Successfully fetched details for telegram_id: {telegram_id}")
+            return patient_details
+        except Exception as e:
+            logging.error(f"Error fetching user details for telegram_id {telegram_id}: {e}")
+            return None
+
+
+    # ---------------------------------------------------
 
     async def get_all_disease_types(self) -> list[dict] | None:
         """Fetches all available disease types from the API."""
@@ -353,6 +374,85 @@ class APIClient:
             logging.error(f"An unexpected error occurred while creating message for patient {patient_id}: {e}",
                           exc_info=True)
             return None
+
+    # ---------------------------------------------------------------------------------------------------------
+    async def create_order(self, patient_id: int, user_id: int, drug_ids: list[int]) -> dict:
+        """
+        Calls the backend API to create a new order with its items.
+        """
+        try:
+            token = await self.login_check()
+            if not token:
+                logging.error("Authentication failed. Cannot create order.")
+                return None
+
+            headers = {"Authorization": f"Bearer {token}"}
+            # این آدرس باید با آدرسی که در api.py بک‌اند ثبت کرده‌اید مطابقت داشته باشد
+            # معمولاً /api/v1/orders/ است.
+            url = f"{self._base_url}/order/"
+
+            # Payload بر اساس اسکیمای OrderCreate در بک‌اند
+            # همانطور که بحث شد، order_status را اینجا ارسال نمی‌کنیم.
+            payload = {
+                "patient_id": patient_id,
+                "user_id": user_id,
+                "drug_ids": drug_ids
+            }
+
+            logging.info(f"Sending request to create order with payload: {payload}")
+            response = await self._client.post(url, headers=headers, json=payload)
+
+            # FastAPI در صورت موفقیت کد 200 یا 201 را برمی‌گرداند.
+            if response.status_code in [200, 201]:
+                created_order = response.json()
+                logging.info(f"Successfully created order with ID: {created_order.get('order_id')}")
+                return created_order
+            else:
+                logging.error(f"Failed to create order. Status: {response.status_code}, Response: {response.text}")
+                response.raise_for_status()  # برای نمایش خطای دقیق‌تر در لاگ‌ها
+                return None
+
+        except httpx.HTTPStatusError as e:
+            logging.error(f"HTTP status error while creating order: {e}")
+            return None
+        except Exception as e:
+            logging.error(f"An unexpected error occurred while creating order: {e}", exc_info=True)
+            return None
+    # --------------------------------------------------------------------------------------
+
+    async def update_patient_status(self, patient_id: int, new_status: str) -> bool:
+        """
+        Updates only the status of a specific patient.
+        """
+        payload = {"patient_status": new_status}
+        try:
+            # از متد update_patient موجود استفاده می‌کنیم
+            return await self.update_patient(patient_id, payload)
+        except Exception as e:
+            logging.error(f"Failed to update patient {patient_id} status to {new_status}: {e}")
+            return False
+
+    async def update_patient(self, patient_telegram_id: int, patient_data: Dict[str, Any]) -> bool:
+        """
+        Updates a patient's data. Can be used for full updates or partial ones (like status).
+        """
+        try:
+            token = await self.login_check()
+            if not token:
+                logging.error("Authentication failed. Cannot update patient.")
+
+                return False
+
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{self._base_url}/patient/{patient_telegram_id}"  # مطمئن شوید پیشوند /api/v1 یا معادل آن در base_url هست
+
+            async with self._client.patch(url, headers=headers, json=patient_data) as response:
+                response.raise_for_status()
+                logging.info(f"Successfully updated patient {patient_telegram_id} with data: {patient_data}")
+                return True
+        except Exception as e:
+            logging.error(f"Error updating patient {patient_telegram_id}: {e}")
+            return False
 
     async def close(self):
         """
