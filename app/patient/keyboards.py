@@ -3,32 +3,115 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardMarkup
+from typing import List, Dict, Any
+
+# این نام را تغییر می‌دهیم تا واضح‌تر باشد
 def get_start_keyboard() -> InlineKeyboardMarkup:
-    """
-    یک کیبورد با دکمه "شروع فرآیند ثبت‌نام" ایجاد می‌کند.
-    """
     builder = InlineKeyboardBuilder()
-    builder.add(InlineKeyboardButton(text="🚀 شروع فرآیند ثبت‌نام", callback_data="start_registration"))
+    # این callback_data را هم تغییر می‌دهیم تا با منطق جدید همخوانی داشته باشد
+    builder.add(InlineKeyboardButton(text="✍️ تکمیل/ویرایش پروفایل", callback_data="start_profile_completion"))
     return builder.as_markup()
 
+# این کیبورد عالی است و تغییری نیاز ندارد
 def get_gender_keyboard() -> InlineKeyboardMarkup:
-    """
-    یک کیبورد برای انتخاب جنسیت (مرد/زن) ایجاد می‌کند.
-    """
     builder = InlineKeyboardBuilder()
-    # callback_data را با مقادیر enum مدل Patient هماهنگ می‌کنیم
     builder.row(
         InlineKeyboardButton(text="مرد", callback_data="gender_male"),
         InlineKeyboardButton(text="زن", callback_data="gender_female")
     )
     return builder.as_markup()
+
+# این کیبورد هم عالی است
 def get_photo_confirmation_keyboard() -> InlineKeyboardMarkup:
-    """
-    یک کیبورد برای تایید ارسال عکس بیشتر یا اتمام فرآیند ایجاد می‌کند.
-    """
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="✔️ بله، عکس دیگری دارم", callback_data="add_another_photo"),
-        InlineKeyboardButton(text="✅ خیر، کافی است (پایان ثبت‌نام)", callback_data="finish_registration")
+        InlineKeyboardButton(text="✅ خیر، کافی است (پایان)", callback_data="finish_registration")
     )
+    return builder.as_markup()
+
+# ===== کیبورد جدید و مهم: منوی اصلی =====
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
+    """
+    منوی اصلی را برای کاربری که پروفایلش کامل است نمایش می‌دهد.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📝 درخواست مشاوره جدید", callback_data="new_consultation_request")
+    builder.button(text="📦 پیگیری سفارش‌ها", callback_data="track_orders")
+    builder.button(text="👤 مشاهده پروفایل من", callback_data="view_profile")
+    builder.adjust(1)
+    return builder.as_markup()
+
+# ===== کیبورد جدید: برای تایید فاکتور =====
+def get_invoice_approval_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """
+    کیبوردی برای تایید یا رد فاکتور توسط بیمار.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="👍 تایید فاکتور و رفتن به پرداخت", callback_data=f"invoice_approve_{order_id}"),
+        InlineKeyboardButton(text="👎 رد کردن فاکتور", callback_data=f"invoice_reject_{order_id}")
+    )
+    return builder.as_markup()
+def get_invoice_action_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """
+    کیبوردی برای تایید یا درخواست ویرایش فاکتور توسط بیمار.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ تأیید و رفتن به پرداخت", callback_data=f"invoice_approve_{order_id}"),
+        InlineKeyboardButton(text="✏️ درخواست ویرایش", callback_data=f"invoice_edit_{order_id}")
+    )
+    return builder.as_markup()
+
+def get_cancel_keyboard() -> InlineKeyboardMarkup:
+    """یک کیبورد ساده برای لغو عملیات فعلی."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ لغو عملیات", callback_data="cancel_action")
+    return builder.as_markup()
+
+
+def get_interactive_invoice_keyboard(items: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    """
+    یک کیبورد تعاملی برای ویرایش فاکتور ایجاد می‌کند.
+    هر آیتم یک دیکشنری است که باید حاوی 'drug_id', 'drug_name', 'qty', 'price', و یک کلید 'selected' باشد.
+    """
+    builder = InlineKeyboardBuilder()
+
+    total_price = 0
+    for item in items:
+        # اگر آیتم انتخاب شده باشد، تیک سبز، در غیر این صورت یک نماد دیگر
+        status_icon = "✅" if item.get("selected", True) else "☑️"
+        drug_name = item.get("drug_name", "نامشخص")
+        qty = item.get("qty", 0)
+        price = item.get("price", 0)
+
+        # محاسبه قیمت کل فقط برای آیتم‌های انتخاب شده
+        if item.get("selected", True):
+            total_price += qty * price
+
+        button_text = f"{status_icon} {drug_name} | {qty} عدد | {price:,} تومان"
+
+        # callback_data شامل یک پیشوند و شناسه دارو است
+        builder.button(
+            text=button_text,
+            callback_data=f"toggle_item:{item['drug_id']}"
+        )
+
+    # دکمه‌ها را به صورت تک ستونی مرتب می‌کنیم
+    builder.adjust(1)
+
+    # اضافه کردن دکمه‌های کنترلی
+    builder.row(
+        builder.button(text="🔄 بازنشانی تغییرات", callback_data="reset_invoice_edit"),
+        builder.button(text="✅ تایید نهایی ویرایش", callback_data="confirm_invoice_edit")
+    )
+
+    # اضافه کردن قیمت کل در یک دکمه غیرقابل کلیک
+    builder.row(
+        builder.button(text=f"💰 قیمت کل: {total_price:,.0f} تومان", callback_data="do_nothing")
+    )
+
     return builder.as_markup()

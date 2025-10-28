@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from http.client import responses
 from typing import Optional, Union, List, Dict,Any
 
 import httpx
@@ -454,6 +455,102 @@ class APIClient:
             logging.error(f"Error updating patient {patient_telegram_id}: {e}")
             return False
 
+    # ------------------------------------------------------------------
+
+
+    # ***********
+    async def get_orders_by_status(self, patient_id: int, status: str) -> List[dict] | None:
+        """
+        سفارشات یک بیمار را بر اساس وضعیت آنها از API دریافت می‌کند.
+        e.g., GET /api/v1/orders/?patient_id=123&status=created
+        """
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+
+            url = f"{self._base_url}/order/get-order-by-status-by-patient-id/{patient_id}/{status}"  # مسیر اصلی endpoint
+            logging.info(f"Fetching orders for patient {patient_id} with status '{status}'")
+
+            response = await self._client.get(url, headers=headers)
+
+            if response.status_code == 404:  # اگر endpoint پیدا نشد (بعید است)
+                logging.warning(f"Orders endpoint not found.")
+                return None
+
+            response.raise_for_status()
+
+            orders = response.json()
+            if not orders:
+                logging.info(f"No orders with status '{status}' found for patient {patient_id}.")
+                return []  # بازگرداندن لیست خالی اگر سفارشی یافت نشد
+
+            return orders
+
+        except httpx.HTTPStatusError as e:
+            logging.error(f"HTTP error fetching orders for patient {patient_id}: {e.response.status_code}")
+            return None
+        except Exception as e:
+            logging.error(f"Unexpected error fetching orders for patient {patient_id}: {e}")
+            return None
+
+    async def update_order(
+            self,
+            order_id: int,
+            order_status: Optional[str] = None,
+            order_items: Optional[List[Dict[str, Any]]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        یک سفارش موجود را با استفاده از اندپوینت جامع PATCH به‌روزرسانی می‌کند.
+
+        Args:
+            order_id (int): شناسه سفارشی که باید آپدیت شود.
+            order_status (Optional[str]): وضعیت جدید سفارش (مثلاً "Awaiting Payment").
+                                          اگر None باشد، ارسال نمی‌شود.
+            order_items (Optional[List[Dict[str, Any]]]): لیست جدید آیتم‌های سفارش.
+                                                        هر آیتم باید دیکشنری با کلیدهای 'drug_id' و 'qty' باشد.
+                                                        اگر None باشد، ارسال نمی‌شود.
+
+        Returns:
+            Optional[Dict[str, Any]]: دیکشنری حاوی اطلاعات سفارش آپدیت شده در صورت موفقیت،
+                                     در غیر این صورت None.
+        """
+        url = f"{self.base_url}/order/{order_id}"  # توجه: مسیر را به /order/{order_id} تغییر دادم
+
+        # 1. ساخت Payload به صورت دینامیک
+        # فقط فیلدهایی که مقدار دارند (None نیستند) به payload اضافه می‌شوند.
+        payload = {}
+        if order_status is not None:
+            payload["order_status"] = order_status
+
+        if order_items is not None:
+            # این بخش اطمینان حاصل می‌کند که ساختار لیست درست است.
+            # نیازی به استفاده از OrderItemUpdate در اینجا نیست، چون aiohttp دیکشنری را به JSON تبدیل می‌کند.
+            payload["order_items"] = order_items
+
+        # اگر هیچ داده‌ای برای آپدیت وجود نداشت، درخواست را ارسال نکن.
+        if not payload:
+            logging.warning(f"update_order called for order {order_id} with no data to update.")
+            return None
+
+        logging.info(f"Sending PATCH request to {url} with payload: {payload}")
+
+        # 2. ارسال درخواست PATCH
+        try:
+            async with self.session.patch(url, json=payload, headers=self.headers) as response:
+                response_data = await response.json()
+                if response.status == 200:
+                    logging.info(f"Order {order_id} updated successfully. Response: {response_data}")
+                    return response_data
+                else:
+                    logging.error(
+                        f"Failed to update order {order_id}. "
+                        f"Status: {response.status}, Response: {response_data}"
+                    )
+                    return None
+        except Exception as e:
+            logging.exception(f"An exception occurred while trying to update order {order_id}: {e}")
+            return None
+    # ----------------------------------------------------------
     async def close(self):
         """
         کلاینت HTTP را به درستی می‌بندد.
