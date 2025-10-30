@@ -1,7 +1,10 @@
 # app/core/services/api_client.py
+import aiohttp
+import asyncio
 
 import asyncio
 import logging
+import os
 from http.client import responses
 from typing import Optional, Union, List, Dict,Any
 
@@ -468,10 +471,15 @@ class APIClient:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
 
-            url = f"{self._base_url}/order/get-order-by-status-by-patient-id/{patient_id}/{status}"  # مسیر اصلی endpoint
+            query_params = {
+                "patient_id": patient_id,
+                "order_status": status
+            }
+
+            url = f"{self._base_url}/order/get-order-by-status-by-patient-id/"  # مسیر اصلی endpoint
             logging.info(f"Fetching orders for patient {patient_id} with status '{status}'")
 
-            response = await self._client.get(url, headers=headers)
+            response = await self._client.get(url, headers=headers, params=query_params)
 
             if response.status_code == 404:  # اگر endpoint پیدا نشد (بعید است)
                 logging.warning(f"Orders endpoint not found.")
@@ -514,8 +522,9 @@ class APIClient:
             Optional[Dict[str, Any]]: دیکشنری حاوی اطلاعات سفارش آپدیت شده در صورت موفقیت،
                                      در غیر این صورت None.
         """
-        url = f"{self.base_url}/order/{order_id}"  # توجه: مسیر را به /order/{order_id} تغییر دادم
-
+        url = f"{self._base_url}/order/{order_id}"  # توجه: مسیر را به /order/{order_id} تغییر دادم
+        token = await self.login_check()
+        headers = {"Authorization": f"Bearer {token}"}
         # 1. ساخت Payload به صورت دینامیک
         # فقط فیلدهایی که مقدار دارند (None نیستند) به payload اضافه می‌شوند.
         payload = {}
@@ -536,21 +545,137 @@ class APIClient:
 
         # 2. ارسال درخواست PATCH
         try:
-            async with self.session.patch(url, json=payload, headers=self.headers) as response:
-                response_data = await response.json()
-                if response.status == 200:
-                    logging.info(f"Order {order_id} updated successfully. Response: {response_data}")
-                    return response_data
-                else:
-                    logging.error(
-                        f"Failed to update order {order_id}. "
-                        f"Status: {response.status}, Response: {response_data}"
-                    )
-                    return None
+            response = await self._client.patch(url,json=payload, headers=headers)
+            response_data = response.json()
+            if response.status_code == 200:
+                logging.info(f"Order {order_id} updated successfully. Response: {response_data}")
+                return response_data
+            else:
+                logging.error(
+                    f"Failed to update order {order_id}. "
+                    f"Status: {response.status_code}, Response: {response_data}"
+                )
+                return None
         except Exception as e:
             logging.exception(f"An exception occurred while trying to update order {order_id}: {e}")
             return None
     # ----------------------------------------------------------
+    async def update_patient_details(self, patient_id: int, details: dict) -> Optional[dict]:
+        """
+        اطلاعات جزئی یک بیمار را با استفاده از اندپوینت PATCH آپدیت می‌کند.
+        این تابع برای ذخیره اطلاعات ارسال (آدرس، کد ملی و...) استفاده می‌شود.
+        """
+        url = f"{self._base_url}/patient/{patient_id}"
+        token = await self.login_check()
+        headers = {"Authorization": f"Bearer {token}"}
+        logging.info(f"Sending PATCH request to {url} to update patient details with payload: {details}")
+        try:
+            response = await self._client.patch(url, json=details, headers=headers)
+            response_data = response.json()
+            if response.status_code == 200:
+                logging.info(f"Patient {patient_id} details updated successfully.")
+                return response_data
+            else:
+                logging.error(
+                    f"Failed to update patient {patient_id} details. Status: {response.status_code}, Response: {response_data}")
+                return None
+        except Exception as e:
+            logging.exception(f"An exception occurred while updating patient {patient_id} details: {e}")
+            return None
+
+    async def create_payment(self, payment_data: dict) -> Optional[dict]:
+        """
+        یک رکورد پرداخت جدید برای یک سفارش ایجاد می‌کند.
+        """
+        url = f"{self._base_url}/payment_list/create_payment"  # فرض می‌کنیم چنین اندپوینتی دارید
+        token = await self.login_check()
+        headers = {"Authorization": f"Bearer {token}"}
+        logging.info(f"Sending POST request to create a new payment with data: {payment_data}")
+        try:
+            # aiohttp برای multipart/form-data به aiohttp.FormData نیاز دارد
+            data = aiohttp.FormData()
+            data.add_field('order_id', str(payment_data['order_id']))
+            data.add_field('amount', str(payment_data['amount']))
+            data.add_field('tracking_code', payment_data['tracking_code'])
+            # اضافه کردن فایل
+            data.add_field('receipt_photo',
+                           open(payment_data['receipt_photo_path'], 'rb'),
+                           filename=os.path.basename(payment_data['receipt_photo_path']),
+                           content_type='image/jpeg')
+
+            # هدر را اینجا تنظیم نمی‌کنیم تا aiohttp خودش Content-Type را مدیریت کند
+
+            async with self._client.post(url, data=data, headers=headers) as response:
+                if response.status == 201:  # معمولا برای ساخت 201 برمی‌گردد
+                    response_data = await response.json()
+                    logging.info(f"Payment created successfully: {response_data}")
+                    return response_data
+                else:
+                    logging.error(
+                        f"Failed to create payment. Status: {response.status}, Response: {await response.text()}")
+                    return None
+        except Exception as e:
+            logging.exception(f"An exception occurred while creating payment: {e}")
+            return None
+
+    async def update_order_comprehensively(
+            self,
+            order_id: int,
+            items: List[Dict[str, Any]],
+            status: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        یک سفارش را به صورت جامع آپدیت می‌کند (جایگزینی آیتم‌ها و/یا تغییر وضعیت).
+        این متد با اندپوینت PATCH /order/{order_id} در بک‌اند هماهنگ است.
+
+        Args:
+            order_id (int): شناسه سفارش برای آپدیت.
+            items (List[Dict[str, Any]]): لیستی از دیکشنری‌های آیتم‌ها. هر دیکشنری
+                                         باید شامل 'drug_id' و 'qty' باشد.
+            status (Optional[str]): وضعیت جدید سفارش (مثلاً 'Created', 'Paid').
+
+        Returns:
+            Optional[Dict]: پاسخ موفقیت‌آمیز از API در صورت آپدیت، در غیر این صورت None.
+        """
+        # ساخت بخش order_items از payload
+        order_items_payload = [
+            {"drug_id": item["drug_id"], "qty": item["qty"]} for item in items
+        ]
+
+        # ساخت payload نهایی
+        payload = {"order_items": order_items_payload}
+
+        # اگر وضعیت جدیدی هم ارسال شده بود، به payload اضافه کن
+        if status:
+            payload["order_status"] = status
+
+        logging.info(f"Attempting to update order {order_id} with payload: {payload}")
+
+        # استفاده از متد عمومی _make_request برای ارسال درخواست
+        # شما باید متد _make_request را در کلاس خود داشته باشید یا مستقیماً از httpx استفاده کنید.
+        # در اینجا فرض بر وجود _make_request است.
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{self._base_url}/order/{order_id}"
+
+            response = await self._client.patch(url, headers=headers, json=payload)
+
+            response.raise_for_status()  # برای کدهای 4xx و 5xx خطا ایجاد می‌کند
+
+            updated_order = response.json()
+            logging.info(f"Successfully updated order {order_id}. Response: {updated_order}")
+            return updated_order
+
+        except httpx.HTTPStatusError as e:
+            logging.error(f"HTTP error updating order {order_id}: {e.response.status_code} - {e.response.text}")
+            return None
+        except Exception as e:
+            logging.error(f"Unexpected error updating order {order_id}: {e}", exc_info=True)
+            return None
+
+
+
     async def close(self):
         """
         کلاینت HTTP را به درستی می‌بندد.

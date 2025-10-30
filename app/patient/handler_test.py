@@ -124,10 +124,7 @@ async def ask_for_another_photo(callback: CallbackQuery, state: FSMContext):
 
 # vvvvvv بازنویسی کامل و نهایی این هندلر vvvvvv
 # --- کاربر فرآیند را تمام می‌کند (پایان ثبت‌نام) ---
-@patient_router.callback_query(
-    PatientRegistration.confirm_photo_upload,
-    F.data == "finish_registration"
-)
+@patient_router.callback_query(PatientRegistration.confirm_photo_upload,F.data == "finish_registration")
 async def finish_registration(
         callback: CallbackQuery,
         state: FSMContext,

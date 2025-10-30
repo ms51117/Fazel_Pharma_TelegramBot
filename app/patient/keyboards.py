@@ -104,14 +104,29 @@ def get_interactive_invoice_keyboard(items: List[Dict[str, Any]]) -> InlineKeybo
     builder.adjust(1)
 
     # اضافه کردن دکمه‌های کنترلی
+    # <<<--- شروع بخش اصلاح شده --->>>
+    # به جای builder.button از InlineKeyboardButton استفاده می‌کنیم
     builder.row(
-        builder.button(text="🔄 بازنشانی تغییرات", callback_data="reset_invoice_edit"),
-        builder.button(text="✅ تایید نهایی ویرایش", callback_data="confirm_invoice_edit")
+        InlineKeyboardButton(text="🔄 بازنشانی", callback_data="reset_invoice_edit"),
+        InlineKeyboardButton(text="✅ تایید ویرایش", callback_data="confirm_invoice_edit")
     )
 
-    # اضافه کردن قیمت کل در یک دکمه غیرقابل کلیک
+    # برای دکمه قیمت کل هم همینطور
     builder.row(
-        builder.button(text=f"💰 قیمت کل: {total_price:,.0f} تومان", callback_data="do_nothing")
+        InlineKeyboardButton(text=f"💰 قیمت کل: {total_price:,.0f} تومان", callback_data="do_nothing")
     )
+    # <<<--- پایان بخش اصلاح شده --->>>
 
+    return builder.as_markup()
+def get_shipping_info_confirmation_keyboard() -> InlineKeyboardMarkup:
+    """
+    کیبوردی برای تایید یا درخواست اصلاح اطلاعات ارسال.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ تایید و ادامه", callback_data="confirm_shipping_info")
+    )
+    builder.row(
+        InlineKeyboardButton(text="✏️ اصلاح اطلاعات", callback_data="edit_shipping_info")
+    )
     return builder.as_markup()

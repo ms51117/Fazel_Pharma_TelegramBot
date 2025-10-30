@@ -1,6 +1,6 @@
 # app/patient/states.py
 
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.state import State, StatesGroup, default_state
 
 class PatientRegistration(StatesGroup):
     """
@@ -18,3 +18,22 @@ class PatientRegistration(StatesGroup):
     confirm_photo_upload = State()
     waiting_for_edit_request = State()  # این را می‌توانیم حذف کنیم یا تغییر نام دهیم
     editing_invoice = State()
+
+
+
+class PatientShippingInfo(StatesGroup):
+    """
+    وضعیت‌ها برای دریافت اطلاعات ارسال مرسوله.
+    """
+    waiting_for_national_id = State()
+    waiting_for_phone_number = State()
+    waiting_for_postal_code = State()
+    waiting_for_address = State()
+
+class PatientPaymentInfo(StatesGroup):
+    """
+    وضعیت‌ها برای دریافت اطلاعات پرداخت.
+    """
+    waiting_for_receipt_photo = State()
+    waiting_for_amount = State()
+    waiting_for_tracking_code = State()
