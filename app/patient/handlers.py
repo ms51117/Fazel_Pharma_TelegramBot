@@ -172,6 +172,15 @@ async def handle_awaiting_invoice_approval(message: Message, state: FSMContext, 
     # فراخوانی تابع نمایش فاکتور تعاملی
     await display_interactive_invoice(message, state, order_to_approve)
 
+async def handle_profile_completed(message: Message, state: FSMContext, api_client: APIClient, patient_id: int):
+    """اگر پروفایل بیمار کامل است، به او منوی اصلی را نمایش می‌دهد."""
+    # در آینده می‌توانید اینجا کیبورد منوی اصلی را نمایش دهید
+    # شروع فرآیند دریافت اطلاعات ارسال
+    await state.set_state(PatientShippingInfo.waiting_for_national_id)
+    await message.answer("لطفاً کد ملی خود را وارد کنید:")
+
+    await process_national_id(message, state)
+
 
 async def handle_awaiting_payment(message: Message, state: FSMContext, api_client: APIClient, patient_id: int):
     """
@@ -194,11 +203,6 @@ async def handle_awaiting_payment(message: Message, state: FSMContext, api_clien
     await state.set_state(PatientPaymentInfo.waiting_for_receipt_photo)
     await message.answer(payment_info_text)
 
-
-async def handle_profile_completed(message: Message):
-    """اگر پروفایل بیمار کامل است، به او منوی اصلی را نمایش می‌دهد."""
-    await message.answer("شما در حال حاضر سفارش فعالی ندارید. برای ثبت درخواست جدید، با پشتیبانی در تماس باشید.")
-    # در آینده می‌توانید اینجا کیبورد منوی اصلی را نمایش دهید
 
 
 # =============================================================================
@@ -450,7 +454,7 @@ async def process_invoice_approval(callback: CallbackQuery, state: FSMContext, a
 
     # آپدیت وضعیت سفارش و بیمار
     await api_client.update_order(order_id, order_status=OrderStatusEnum.CREATED.value)
-    await api_client.update_patient_status(patient_id, PatientStatus.AWAITING_PAYMENT.value)
+    await api_client.update_patient_status(patient_id, PatientStatus.PROFILE_COMPLETED.value)
 
     await callback.message.edit_text("فاکتور تایید شد. در حال انتقال به مرحله ورود اطلاعات ارسال...")
     await state.clear()
@@ -555,7 +559,7 @@ async def handle_confirm_edit(callback: CallbackQuery, state: FSMContext, api_cl
     )
     # پس از آپدیت موفق سفارش:
     if updated_order:
-        await api_client.update_patient_status(callback.from_user.id, PatientStatus.AWAITING_PAYMENT.value)
+        await api_client.update_patient_status(callback.from_user.id, PatientStatus.PROFILE_COMPLETED.value)
         await callback.message.edit_text("ویرایش با موفقیت ثبت شد. در حال انتقال به مرحله ورود اطلاعات ارسال...")
         await state.clear()
 
@@ -727,7 +731,7 @@ async def process_address(message: Message, state: FSMContext,bot:Bot, api_clien
     """آخرین مرحله دریافت اطلاعات ارسال و ذخیره در دیتابیس."""
     await state.update_data(address=message.text)
     data = await state.get_data()
-    patient_id = data.get("patient_id")  # این باید از مراحل قبل در state موجود باشد
+    telegram_id = message.from_user.id
 
     shipping_details = {
         "national_id": data.get("national_id"),
@@ -737,11 +741,11 @@ async def process_address(message: Message, state: FSMContext,bot:Bot, api_clien
     }
 
     # آپدیت اطلاعات بیمار در بک‌اند
-    updated_patient = await api_client.update_patient_details(patient_id, shipping_details)
+    updated_patient = await api_client.update_patient_details(telegram_id, shipping_details)
 
     if updated_patient:
         # **تغییر وضعیت بیمار به پروفایل کامل شده**
-        await api_client.update_patient_status(patient_id, PatientStatus.PROFILE_COMPLETED.value)
+        await api_client.update_patient_status(telegram_id, PatientStatus.AWAITING_PAYMENT.value)
         await message.answer(
             "✅ اطلاعات ارسال شما با موفقیت ثبت شد.\n"
             "حالا به مرحله پرداخت منتقل می‌شوید."
@@ -794,12 +798,14 @@ async def process_payment_amount(message: Message, state: FSMContext):
 async def process_payment_tracking_code(message: Message, state: FSMContext, api_client: APIClient):
     await state.update_data(tracking_code=message.text)
     data = await state.get_data()
+    receipt_path = data.get("receipt_photo_path")
+
 
     payment_payload = {
         "order_id": data.get("paying_order_id"),
-        "amount": int(data.get("amount")),
-        "tracking_code": data.get("tracking_code"),
-        "receipt_photo_path": data.get("receipt_photo_path")
+        "payment_value": int(data.get("amount")),
+        "payment_refer_code": data.get("tracking_code"),
+        "payment_path_file": receipt_path
     }
 
     # ارسال اطلاعات به API برای ساخت رکورد پرداخت

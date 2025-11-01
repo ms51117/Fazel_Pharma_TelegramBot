@@ -587,33 +587,21 @@ class APIClient:
         """
         یک رکورد پرداخت جدید برای یک سفارش ایجاد می‌کند.
         """
-        url = f"{self._base_url}/payment_list/create_payment"  # فرض می‌کنیم چنین اندپوینتی دارید
+        url = f"{self._base_url}/payment/"  # فرض می‌کنیم چنین اندپوینتی دارید
         token = await self.login_check()
         headers = {"Authorization": f"Bearer {token}"}
         logging.info(f"Sending POST request to create a new payment with data: {payment_data}")
         try:
-            # aiohttp برای multipart/form-data به aiohttp.FormData نیاز دارد
-            data = aiohttp.FormData()
-            data.add_field('order_id', str(payment_data['order_id']))
-            data.add_field('amount', str(payment_data['amount']))
-            data.add_field('tracking_code', payment_data['tracking_code'])
-            # اضافه کردن فایل
-            data.add_field('receipt_photo',
-                           open(payment_data['receipt_photo_path'], 'rb'),
-                           filename=os.path.basename(payment_data['receipt_photo_path']),
-                           content_type='image/jpeg')
 
-            # هدر را اینجا تنظیم نمی‌کنیم تا aiohttp خودش Content-Type را مدیریت کند
-
-            async with self._client.post(url, data=data, headers=headers) as response:
-                if response.status == 201:  # معمولا برای ساخت 201 برمی‌گردد
-                    response_data = await response.json()
-                    logging.info(f"Payment created successfully: {response_data}")
-                    return response_data
-                else:
-                    logging.error(
-                        f"Failed to create payment. Status: {response.status}, Response: {await response.text()}")
-                    return None
+            response = await self._client.post(url, json=payment_data, headers=headers)
+            if response.status_code == 201:  # معمولا برای ساخت 201 برمی‌گردد
+                response_data = response.json()
+                logging.info(f"Payment created successfully: {response_data}")
+                return response_data
+            else:
+                logging.error(
+                    f"Failed to create payment. Status: {response.status_code}, Response: {response.json()}")
+                return None
         except Exception as e:
             logging.exception(f"An exception occurred while creating payment: {e}")
             return None
