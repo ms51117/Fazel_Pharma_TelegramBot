@@ -662,7 +662,55 @@ class APIClient:
             logging.error(f"Unexpected error updating order {order_id}: {e}", exc_info=True)
             return None
 
+    # -----------------------------------------------------------------------------
 
+    async def get_pending_payment_dates(self) -> Optional[list[str]]:
+        """Fetches dates with 'NOT_SEEN' payments."""
+        # فرض می‌کنیم پاسخ API به شکل {"dates": [...]} است
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{self._base_url}/payment/not-seen/"
+            # مسیر اندپوینت خود را جایگزین کنید
+            response = await self._client.get(url, headers=headers)
+            return response.json()
+        except Exception as e:
+            logging.error(f"Error fetching pending payment dates: {e}")
+            return None
+
+    async def get_pending_payments_by_date(self, date_str: str) -> Optional[list[dict]]:
+        """Fetches pending payments for a date using the DatePaymentListRead schema."""
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{self._base_url}/payment/not-seen/by-date/{date_str}"
+            # مسیر اندپوینت خود را جایگزین کنید
+            response = await self._client.get(url, headers=headers)
+            return response.json()  # API باید مستقیما لیست را برگرداند
+        except Exception as e:
+            logging.error(f"Error fetching pending payments for date {date_str}: {e}")
+            return None
+
+    async def update_payment(self, payment_id: int, payload: dict) -> Optional[dict]:
+        """
+        Updates a payment record using PATCH.
+        Used for approving or rejecting a payment.
+
+        Args:
+            payment_list_id: The ID of the payment to update.
+            payload: A dictionary matching the PaymentListUpdate schema,
+                     e.g., {"payment_status": "ACCEPTED", "user_id": 1}
+        """
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{self._base_url}/payment/{payment_id}"
+            # مسیر اندپوینت خود را جایگزین کنید
+            response = await self._client.patch(url,headers=headers, json=payload)
+            return response.json()
+        except Exception as e:
+            logging.error(f"Error updating payment {payment_id}: {e}")
+            return None
 
     async def close(self):
         """
