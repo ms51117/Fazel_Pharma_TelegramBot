@@ -12,6 +12,8 @@ from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.filters import CommandStart
 from aiogram.fsm.state import default_state  # ### <-- ایمپورت جدید
 from aiogram.filters import CommandStart, StateFilter # ### <-- ایمپورت جدید
+from aiogram.filters import StateFilter
+
 
 # ایمپورت‌های پروژه شما
 from app.patient.states import PatientRegistration, PatientShippingInfo, PatientPaymentInfo
@@ -27,9 +29,6 @@ from app.core.enums import PatientStatus, OrderStatusEnum
 # ساخت روتر
 patient_router = Router(name="patient")
 logger = logging.getLogger(__name__)
-
-
-
 
 
 
@@ -73,9 +72,6 @@ async def save_telegram_photo(
     except Exception as e:
         logger.error(f"Could not download file {file_id} for user {telegram_id}. Purpose: {purpose}. Error: {e}")
         return None
-
-
-
 
 
 
@@ -138,8 +134,13 @@ async def main_patient_handler(message: Message, state: FSMContext, api_client: 
 async def handle_new_or_incomplete_profile(message: Message, state: FSMContext):
     """اگر بیمار جدید است یا پروفایلش ناقص است، فرآیند ثبت‌نام را شروع می‌کند."""
     await state.set_state(PatientRegistration.waiting_for_full_name)
+    await message.answer("سلام وقت بخیر: \n"
+                         "حجم پیامها بسار بالاست و ممکنه چند روز زمان ببره تا نوبت مشاوره شما برسه , پیشاپیش ممنون از صبوریتون \n"
+                         "\n"
+                         "اگر مشهد هستید و امکان مراجعه حضوری دارین عصر ها بین ساعت 17 تا 22 میتونید به داروخانه مراجعه کنید\n"
+                         "\n"
+                         "اگر میخاین از مشاوره انلاین ما استفاده کنید , لطفا سوالاتی که در ادامه ازتون پرسیده میشه با دقت جواب بدین تا بتونیم بهتر راهنماییتون کنیم ")
     await message.answer(
-        "به داروخانه فاضل خوش آمدید!\n"
         "برای شروع، لطفاً نام و نام خانوادگی خود را وارد کنید:",
         reply_markup=ReplyKeyboardRemove()
     )
@@ -223,6 +224,16 @@ async def process_full_name(message: Message, state: FSMContext):
 async def process_gender(callback: CallbackQuery, state: FSMContext):
     gender_value = "male" if callback.data == "gender_male" else "female"
     await state.update_data(gender=gender_value)
+    try:
+        await callback.message.edit_text(
+            f"✅ جنسیت انتخاب شد: **{gender_value}**",
+            reply_markup=None,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        # اگر ویرایش پیام به هر دلیلی (مثلا قدیمی بودن پیام) ممکن نبود، خطا لاگ شود
+        # و از ادامه کار جلوگیری نشود.
+        print(f"Could not edit gender message: {e}")
     await state.set_state(PatientRegistration.waiting_for_age)
     await callback.message.answer("لطفاً سن خود را به عدد وارد کنید (مثال: 35):")
     await callback.answer()
@@ -264,15 +275,30 @@ async def process_height(message: Message, state: FSMContext):
         "اطلاعات اولیه شما ثبت شد.\n\nحالا لطفاً توضیحات کاملی در مورد بیماری، علائم و داروهای مورد نیاز خود را در یک پیام وارد کنید.")
 
 
+
+
+
 # --- دریافت توضیحات بیماری و درخواست عکس ---
 @patient_router.message(PatientRegistration.waiting_for_disease_description)
 async def process_disease_description(message: Message, state: FSMContext):
     await state.update_data(disease_description=message.text, photos=[])
+    await state.set_state(PatientRegistration.waiting_for_special_conditions)
+    await message.answer(
+        "اگر دارای شرایط خاصی مثل بیماری‌های زمینه‌ای (مثلاً تیروئید)، "
+        "بارداری، شیردهی یا مصرف داروی خاص هستید، حتماً بنویسید.\n"
+        "در غیر این صورت بنویسید 'ندارم'."
+    )
+
+@patient_router.message(PatientRegistration.waiting_for_special_conditions)
+async def process_special_conditions(message: Message, state: FSMContext):
+    """دریافت شرایط خاص بیمار مثل بیماری زمینه‌ای، بارداری یا داروی خاص."""
+    await state.update_data(special_conditions=message.text)
     await state.set_state(PatientRegistration.waiting_for_photos)
     await message.answer(
-        "بسیار خب. حالا لطفاً عکس‌های مربوط به مشکل خود را ارسال کنید.\nپس از ارسال تمام عکس‌ها، روی دکمه 'پایان ثبت‌نام' کلیک کنید.",
-        reply_markup=get_photo_confirmation_keyboard())
-
+        "حالا لطفاً عکس‌های مربوط به مشکل خود را ارسال کنید.\n"
+        "پس از ارسال تمام عکس‌ها، روی دکمه 'پایان ثبت‌نام' کلیک کنید.",
+        reply_markup=get_photo_confirmation_keyboard()
+    )
 
 # --- دریافت عکس‌ها ---
 @patient_router.message(PatientRegistration.waiting_for_photos, F.photo)
@@ -298,7 +324,7 @@ async def ask_for_another_photo(callback: CallbackQuery, state: FSMContext):
 
 # (اینجا تمام هندلرهای FSM ثبت‌نام از process_full_name تا finish_registration قرار می‌گیرند)
 # من فقط هندلر پایانی را برای اختصار اینجا می‌آورم:
-@patient_router.callback_query(PatientRegistration.confirm_photo_upload, F.data == "finish_registration")
+@patient_router.callback_query( StateFilter( PatientRegistration.confirm_photo_upload,PatientRegistration.waiting_for_photos), F.data == "finish_registration")
 async def finish_registration(callback: CallbackQuery, state: FSMContext, bot: Bot, api_client: APIClient):
     # ... (کد دانلود عکس‌ها و آماده‌سازی داده‌ها دقیقاً مثل قبل)
     await callback.message.edit_text("⏳ در حال پردازش و ذخیره اطلاعات شما... لطفاً کمی صبر کنید.")
@@ -346,7 +372,8 @@ async def finish_registration(callback: CallbackQuery, state: FSMContext, bot: B
         "height": user_data.get("height"),
         "telegram_id": str(telegram_id),
         "specific_diseases": user_data.get("disease_description"),
-        "photo_paths": saved_photo_paths
+        "photo_paths": saved_photo_paths,
+        "special_conditions" : user_data.get("special_conditions")
     }
 
     # پس از ارسال به API و ایجاد پروفایل:

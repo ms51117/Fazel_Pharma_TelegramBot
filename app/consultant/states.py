@@ -4,6 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class ConsultantFlow(StatesGroup):
     # حالت‌های اصلی جریان کاری
+    main_menu = State()
     choosing_date = State()
     choosing_patient = State()
     viewing_patient_details = State()

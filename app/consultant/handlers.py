@@ -9,17 +9,24 @@ from aiogram.types import Message, CallbackQuery, FSInputFile # <--- این را
 from aiogram.fsm.context import FSMContext
 from decimal import Decimal # <--- این خط را اضافه کنید
 
+from aiogram.filters import CommandStart, StateFilter
+from aiogram.fsm.state import default_state
+from aiogram import Bot
+
+
+
 from app.core.enums import PatientStatus  # <-- Enum را وارد کنید
 
 from app.core.API_Client import APIClient
 from .states import ConsultantFlow
-from .keyboards import create_dates_keyboard, create_patients_keyboard
+from .keyboards import create_dates_keyboard, create_patients_keyboard, get_next_patient_keyboard
 from .keyboards import (
     create_dates_keyboard,
     create_patients_keyboard,
     get_start_prescription_keyboard, # <--- جدید
     create_disease_types_keyboard,   # <--- جدید
-    create_drugs_keyboard            # <--- جدید
+    create_drugs_keyboard,
+    get_main_menu_keyboard# <--- جدید
 )
 
 consultant_router = Router()
@@ -27,24 +34,28 @@ logger = logging.getLogger(__name__)
 
 
 # --- مرحله ۱: شروع کار مشاور با دستور /start ---
-@consultant_router.message(Command("start"))
-async def consultant_start(message: Message, state: FSMContext, api_client: APIClient):
-    await state.clear()  # شروع تمیز
+@consultant_router.callback_query(ConsultantFlow.main_menu,F.data == "consultant_panel")
+async def consultant_start(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
 
-    await message.answer("در حال دریافت لیست تاریخ‌های نیازمند بررسی...")
+    await callback.message.edit_text("در حال دریافت لیست تاریخ‌های نیازمند بررسی...")
 
     unassigned_dates = await api_client.get_waiting_for_consultation_dates()
 
+    logging.info(unassigned_dates)
+
     if not unassigned_dates:
-        await message.answer("در حال حاضر هیچ بیماری در صف انتظار برای بررسی وجود ندارد. ✅")
+        await callback.message.edit_text("در حال حاضر هیچ بیماری در صف انتظار برای بررسی وجود ندارد. ✅")
+
         return
 
     keyboard = create_dates_keyboard(unassigned_dates)
-    await message.answer(
+    await callback.message.edit_text(
         "📅 لطفاً تاریخی که می‌خواهید بیماران آن را بررسی کنید، انتخاب نمایید:",
         reply_markup=keyboard
     )
     await state.set_state(ConsultantFlow.choosing_date)
+
+
 
 
 # --- مرحله ۲: دریافت تاریخ و نمایش بیماران آن روز ---
@@ -93,13 +104,15 @@ async def process_patient_choice(callback: CallbackQuery, state: FSMContext, api
     # آماده‌سازی متن نمایش اطلاعات
     info_text = (
         f"📄 **اطلاعات بیمار:** `{patient_details.get('full_name')}`\n\n"
-        f"▪️ **شناسه تلگرام:** `{patient_details.get('user', {}).get('telegram_id')}`\n"
+        f"▪️ **شناسه تلگرام:** `{patient_details.get('telegram_id')}`\n"
         f"▪️ **جنسیت:** {'مرد' if patient_details.get('gender') == 'male' else 'زن'}\n"
         f"▪️ **سن:** {patient_details.get('age')} سال\n"
         f"▪️ **وزن:** {patient_details.get('weight')} کیلوگرم\n"
         f"▪️ **قد:** {patient_details.get('height')} سانتی‌متر\n\n"
         f"📝 **شرح مشکل بیمار:**\n"
-        f"{patient_details.get('disease_description')}"
+        f"{patient_details.get('specific_diseases')}"
+        f"▪️ **شرایط خاص:** {patient_details.get('special_conditions')} \n"
+
     )
 
     await callback.message.edit_text(info_text, parse_mode="Markdown")
@@ -217,7 +230,7 @@ async def process_drug_selection(callback: CallbackQuery, state: FSMContext):
 # این هندلر در گام بعدی که ثبت سفارش است، پیاده‌سازی خواهد شد.
 # فعلا فقط اطلاعات را نمایش می‌دهیم تا از صحت عملکرد مطمئن شویم.
 @consultant_router.callback_query(ConsultantFlow.choosing_drugs, F.data == "confirm_drugs")
-async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_client: APIClient):  # <--- user_id مشاور از میدل‌ور اضافه شد
+async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_client: APIClient , bot : Bot):  # <--- user_id مشاور از میدل‌ور اضافه شد
     await callback.answer("در حال ثبت تجویز...", show_alert=False)
 
     data = await state.get_data()
@@ -304,12 +317,28 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
             f"---------------------------\n"
             f"💰 **جمع کل:** **{total_price_formatted} ریال**\n\n"
             f"ℹ️ وضعیت سفارش: `ایجاد شده` (created)\n"
-            f"این سفارش جهت تایید نهایی به ادمین سیستم ارجاع داده شد."
+            f"این سفارش جهت تایید نهایی به بیمار ارجاع داده شد."
         )
 
-        await callback.message.edit_text(success_message, parse_mode="Markdown")
+        try:
+            patient_telegram_id = data.get("patient_telegram_id")
+            if patient_telegram_id:
+                await bot.send_message(
+                    chat_id=patient_telegram_id,
+                    text=(
+                        "✅ مشاوره شما توسط دکتر انجام شد.\n"
+                        "لطفاً فاکتور داروهای پیشنهادی خود را در همین ربات بررسی و تأیید کنید 🙏"
+                    )
+                )
+            else:
+                logging.warning("Patient telegram ID not found in FSM data; cannot send consultation notification.")
+        except Exception as e:
+            logging.error(f"Failed to send consultation-done message to patient: {e}")
 
         # ۴. پایان فلو و پاک کردن state
+        await callback.message.edit_text(success_message, parse_mode="Markdown",reply_markup=get_next_patient_keyboard())
+
+
         await state.clear()
 
     except Exception as e:
@@ -320,3 +349,83 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
             "لطفاً لحظاتی بعد دوباره تلاش کنید یا با پشتیبانی تماس بگیرید."
         )
         await state.clear()
+
+
+@consultant_router.callback_query(F.data == "next_patient")
+async def handle_next_patient(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
+    """نمایش قدیمی‌ترین بیمار در صف بررسی برای مشاور بعد از ثبت دارو."""
+    await callback.message.edit_text("در حال دریافت بیمار بعدی بر اساس قدیمی‌ترین درخواست...")
+
+    # ۱) دریافت لیست تاریخ‌های دارای بیمار در انتظار بررسی
+    unassigned_dates = await api_client.get_waiting_for_consultation_dates()
+    if not unassigned_dates:
+        await callback.message.edit_text("✅ هیچ بیمار جدیدی در صف بررسی وجود ندارد.")
+        await state.clear()
+        return
+
+    # ۲) انتخاب قدیمی‌ترین تاریخ
+    oldest_date = sorted(unassigned_dates)[0]
+
+    # ۳) دریافت لیست بیماران آن تاریخ
+    patients = await api_client.get_waiting_for_consultation_patients_by_date(oldest_date)
+    if not patients:
+        await callback.message.edit_text(f"هیچ بیماری برای تاریخ {oldest_date} یافت نشد.")
+        await state.clear()
+        return
+
+    # انتخاب اولین بیمار لیست (قدیمی‌ترین آن روز)
+    next_patient = patients[0]
+    patient_id = next_patient.get("telegram_id")
+
+    # دریافت جزئیات کامل بیمار با همان تابعی که قبلاً استفاده می‌کردی
+    patient_details = await api_client.get_patient_details_by_telegram_id(patient_id)
+    if not patient_details:
+        await callback.message.edit_text(f"خطا: اطلاعات بیمار با شناسه {patient_id} یافت نشد.")
+        await state.clear()
+        return
+
+    # آماده‌سازی متن اطلاعات بیمار
+    info_text = (
+        f"📄 **اطلاعات بیمار بعدی:** `{patient_details.get('full_name')}`\n\n"
+        f"▪️ **شناسه تلگرام:** `{patient_details.get('telegram_id')}`\n"
+        f"▪️ **جنسیت:** {'مرد' if patient_details.get('gender') == 'male' else 'زن'}\n"
+        f"▪️ **سن:** {patient_details.get('age')} سال\n"
+        f"▪️ **وزن:** {patient_details.get('weight')} کیلوگرم\n"
+        f"▪️ **قد:** {patient_details.get('height')} سانتی‌متر\n\n"
+        f"📝 **شرح مشکل:**\n{patient_details.get('specific_diseases')}\n\n"
+        f"▪️ **شرایط خاص:** {patient_details.get('special_conditions', 'نامشخص')}"
+    )
+
+    await callback.message.edit_text(info_text, parse_mode="Markdown")
+
+    # ارسال عکس‌ها (در صورت وجود)
+    photo_paths = patient_details.get("photo_paths", [])
+    if photo_paths:
+        try:
+            media_group = [InputMediaPhoto(media=FSInputFile(p)) for p in photo_paths]
+            await callback.message.answer_media_group(media=media_group)
+        except Exception as e:
+            logger.error(f"Send patient photo error: {e}")
+
+    # نمایش دکمه شروع تجویز برای بیمار جدید
+    await callback.message.answer(
+        "برای شروع بررسی و تجویز دارو، روی دکمه زیر کلیک کنید:",
+        reply_markup=get_start_prescription_keyboard()
+    )
+
+    await state.set_state(ConsultantFlow.viewing_patient_details)
+
+
+@consultant_router.message(StateFilter(default_state), F.text)
+async def handle_any_text(message: Message, state: FSMContext):
+
+    """
+    این هندلر به هر پیام متنی در حالت پیش‌فرض (وقتی کاربر در حال انجام کاری نیست)
+    پاسخ می‌دهد و منوی اصلی را نمایش می‌دهد.
+    """
+    await state.set_state(ConsultantFlow.main_menu)
+
+    await message.answer(
+        "به پنل مشاوران خوش آمدید. لطفاً از منوی زیر برای شروع کار استفاده کنید:",
+        reply_markup=get_main_menu_keyboard()
+    )

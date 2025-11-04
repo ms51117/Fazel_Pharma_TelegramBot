@@ -92,3 +92,25 @@ def create_drugs_keyboard(drugs: list[dict], selected_drug_ids: set[int] = None)
     # --------------------------
 
     return builder.as_markup()
+
+
+
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
+    """
+    منوی اصلی مشاور را ایجاد می‌کند که نقطه شروع کار اوست.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="مشاهده درخواست‌های در انتظار بررسی",
+        callback_data="consultant_panel"
+    )
+    return builder.as_markup()
+
+
+def get_next_patient_keyboard():
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="👤 بیمار بعدی", callback_data="next_patient")]
+        ]
+    )
+    return keyboard
