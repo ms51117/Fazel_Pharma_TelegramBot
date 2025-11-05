@@ -21,7 +21,7 @@ from app.patient.keyboards import (
     get_gender_keyboard,
     get_photo_confirmation_keyboard,
     get_interactive_invoice_keyboard,
-    get_shipping_info_confirmation_keyboard, get_invoice_approval_keyboard, get_invoice_action_keyboard
+    get_shipping_info_confirmation_keyboard, get_invoice_action_keyboard
 )
 from app.core.API_Client import APIClient
 from app.core.enums import PatientStatus, OrderStatusEnum
@@ -117,11 +117,14 @@ async def main_patient_handler(message: Message, state: FSMContext, api_client: 
     # وضعیت ۴: بیمار فاکتور را تایید کرده و منتظر پرداخت است
     if patient_profile.get("patient_status") == PatientStatus.AWAITING_PAYMENT.value:
         patient_id = patient_profile.get("patient_id")
-        return await handle_awaiting_payment(message, state, api_client, patient_id)
+        return await handle_awaiting_payment(message, state, api_client, patient_id, bot)
 
     # وضعیت ۵: پروفایل کامل شده (پرداخت انجام شده و...)
     if patient_profile.get("patient_status") == PatientStatus.PROFILE_COMPLETED.value:
-        return await handle_profile_completed(message)
+        return await handle_profile_completed(message,state, api_client)
+
+    if patient_profile.get("patient_status") == PatientStatus.PAYMENT_COMPLETED.value:
+        return await handle_payment_completed(message,state, api_client)
 
     # وضعیت پیش‌فرض برای سایر حالت‌ها
     await message.answer("شما در وضعیت نامشخصی قرار دارید. لطفاً با پشتیبانی تماس بگیرید.")
@@ -173,7 +176,7 @@ async def handle_awaiting_invoice_approval(message: Message, state: FSMContext, 
     # فراخوانی تابع نمایش فاکتور تعاملی
     await display_interactive_invoice(message, state, order_to_approve)
 
-async def handle_profile_completed(message: Message, state: FSMContext, api_client: APIClient, patient_id: int):
+async def handle_profile_completed(message: Message, state: FSMContext,api_client: APIClient):
     """اگر پروفایل بیمار کامل است، به او منوی اصلی را نمایش می‌دهد."""
     # در آینده می‌توانید اینجا کیبورد منوی اصلی را نمایش دهید
     # شروع فرآیند دریافت اطلاعات ارسال
@@ -183,7 +186,7 @@ async def handle_profile_completed(message: Message, state: FSMContext, api_clie
     await process_national_id(message, state)
 
 
-async def handle_awaiting_payment(message: Message, state: FSMContext, api_client: APIClient, patient_id: int):
+async def handle_awaiting_payment(message: Message, state: FSMContext, api_client: APIClient, patient_id: int, bot:Bot):
     """
     اگر بیمار منتظر پرداخت است، اطلاعات پرداخت را به او نمایش می‌دهد.
     """
@@ -203,6 +206,10 @@ async def handle_awaiting_payment(message: Message, state: FSMContext, api_clien
     )
     await state.set_state(PatientPaymentInfo.waiting_for_receipt_photo)
     await message.answer(payment_info_text)
+    await process_receipt_photo(message, state, bot)
+
+async def handle_payment_completed(message: Message, state: FSMContext, api_client: APIClient):
+    await message.answer("درخاست شما در سامانه ثبت شد و در انتظاره تایید پرداخت است , پس از تایید پرداخت سفارش شما برای ارسال اماده میشود")
 
 
 
@@ -472,16 +479,19 @@ async def display_interactive_invoice(message: Message, state: FSMContext, order
         reply_markup=keyboard,
         parse_mode='Markdown'
     )
-@patient_router.callback_query(F.data == "approve_invoice")
+@patient_router.callback_query(F.data.startswith("invoice_approve_"))
 async def process_invoice_approval(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
+
+
+
     """هنگامی که کاربر روی دکمه 'تایید نهایی' (بدون ویرایش) کلیک می‌کند."""
     data = await state.get_data()
     order_id = data.get("editing_order_id")
-    patient_id = data.get("patient_id")
+    patient_telegram_id = str(callback.from_user.id)
 
     # آپدیت وضعیت سفارش و بیمار
     await api_client.update_order(order_id, order_status=OrderStatusEnum.CREATED.value)
-    await api_client.update_patient_status(patient_id, PatientStatus.PROFILE_COMPLETED.value)
+    await api_client.update_patient_status(patient_telegram_id, PatientStatus.PROFILE_COMPLETED.value)
 
     await callback.message.edit_text("فاکتور تایید شد. در حال انتقال به مرحله ورود اطلاعات ارسال...")
     await state.clear()
@@ -586,7 +596,7 @@ async def handle_confirm_edit(callback: CallbackQuery, state: FSMContext, api_cl
     )
     # پس از آپدیت موفق سفارش:
     if updated_order:
-        await api_client.update_patient_status(callback.from_user.id, PatientStatus.PROFILE_COMPLETED.value)
+        await api_client.update_patient_status(str(callback.from_user.id), PatientStatus.PROFILE_COMPLETED.value)
         await callback.message.edit_text("ویرایش با موفقیت ثبت شد. در حال انتقال به مرحله ورود اطلاعات ارسال...")
         await state.clear()
 
@@ -731,16 +741,39 @@ async def confirm_invoice_edit(callback: CallbackQuery, state: FSMContext, api_c
 
 @patient_router.message(PatientShippingInfo.waiting_for_national_id)
 async def process_national_id(message: Message, state: FSMContext):
+    national_id = message.text.strip()
+
+    # بررسی صحت کد ملی
+    def is_valid_national_id(code: str) -> bool:
+        if not code.isdigit() or len(code) != 10:
+            return False
+        if len(set(code)) == 1:
+            return False
+        check = int(code[9])
+        s = sum(int(code[i]) * (10 - i) for i in range(9)) % 11
+        return (s < 2 and check == s) or (s >= 2 and check + s == 11)
+
+    if not is_valid_national_id(national_id):
+        await message.answer("❌ کد ملی وارد شده معتبر نیست. لطفاً دوباره وارد کنید (باید ۱۰ رقم باشد).")
+        return
     # اعتبارسنجی کد ملی...
-    await state.update_data(national_id=message.text)
+    await state.update_data(national_id=national_id)
     await state.set_state(PatientShippingInfo.waiting_for_phone_number)
-    await message.answer("لطفاً شماره تماس خود را وارد کنید:")
+    await message.answer("لطفاً شماره تماس خود را وارد کنید:\n"
+                         "دقت داشته باشید که شماره تماس باید با 09 شروع شود:")
 
 
 @patient_router.message(PatientShippingInfo.waiting_for_phone_number)
 async def process_phone_number(message: Message, state: FSMContext):
     # اعتبارسنجی شماره...
-    await state.update_data(phone_number=message.text)
+
+    phone = message.text.strip()
+
+    if not phone.isdigit() or not phone.startswith("09") or len(phone) != 11:
+        await message.answer("❌ شماره تماس باید فقط شامل ۱۱ رقم و با 09 شروع شود. مثال: 09123456789")
+        return
+
+    await state.update_data(phone_number=phone)
     await state.set_state(PatientShippingInfo.waiting_for_postal_code)
     await message.answer("لطفاً کد پستی ۱۰ رقمی خود را وارد کنید:")
 
@@ -748,7 +781,12 @@ async def process_phone_number(message: Message, state: FSMContext):
 @patient_router.message(PatientShippingInfo.waiting_for_postal_code)
 async def process_postal_code(message: Message, state: FSMContext):
     # اعتبارسنجی کد پستی...
-    await state.update_data(postal_code=message.text)
+    postal = message.text.strip()
+
+    if not postal.isdigit() or len(postal) != 10:
+        await message.answer("❌ کد پستی باید دقیقاً ۱۰ رقم عددی باشد.")
+        return
+    await state.update_data(postal_code=postal)
     await state.set_state(PatientShippingInfo.waiting_for_address)
     await message.answer("لطفاً آدرس دقیق پستی خود را وارد کنید:")
 
@@ -768,11 +806,11 @@ async def process_address(message: Message, state: FSMContext,bot:Bot, api_clien
     }
 
     # آپدیت اطلاعات بیمار در بک‌اند
-    updated_patient = await api_client.update_patient_details(telegram_id, shipping_details)
+    updated_patient = await api_client.update_patient(str(telegram_id), shipping_details)
 
     if updated_patient:
         # **تغییر وضعیت بیمار به پروفایل کامل شده**
-        await api_client.update_patient_status(telegram_id, PatientStatus.AWAITING_PAYMENT.value)
+        await api_client.update_patient_status(str(telegram_id), PatientStatus.AWAITING_PAYMENT.value)
         await message.answer(
             "✅ اطلاعات ارسال شما با موفقیت ثبت شد.\n"
             "حالا به مرحله پرداخت منتقل می‌شوید."
@@ -792,26 +830,37 @@ async def process_address(message: Message, state: FSMContext,bot:Bot, api_clien
 
 @patient_router.message(PatientPaymentInfo.waiting_for_receipt_photo, F.photo)
 async def process_receipt_photo(message: Message, state: FSMContext, bot: Bot):
+
+    if not message.photo:
+        await message.answer("❌ لطفاً عکس رسید پرداخت را ارسال کنید. فقط فایل تصویر قابل قبول است.")
+        return
+
     await message.answer("⏳ در حال ذخیره عکس رسید...")
 
-    photo_file_id = message.photo[-1].file_id
-    telegram_id = message.from_user.id
+    try:
+        # گرفتن آخرین سایز تصویر (بیشترین وضوح)
+        photo_file_id = message.photo[-1].file_id
+        telegram_id = message.from_user.id
 
-    # استفاده از تابع کمکی برای ذخیره عکس رسید
-    saved_path = await save_telegram_photo(
-        bot=bot,
-        file_id=photo_file_id,
-        telegram_id=telegram_id,
-        purpose="receipt"  # نام فایل مثلا میشود: 12345..._receipt.jpg
-    )
+        # ✅ ذخیره در سرور (توابع کمکی خودت)
+        saved_path = await save_telegram_photo(
+            bot=bot,
+            file_id=photo_file_id,
+            telegram_id=telegram_id,
+            purpose="receipt"
+        )
 
-    if saved_path:
+        if not saved_path:
+            await message.answer("❌ مشکلی در ذخیره عکس پیش آمد. لطفاً دوباره عکس را ارسال کنید.")
+            return
+
         await state.update_data(receipt_photo_path=saved_path)
         await state.set_state(PatientPaymentInfo.waiting_for_amount)
-        await message.answer("✅ عکس رسید دریافت شد.\n\nمبلغ واریز شده را به تومان وارد کنید:")
-    else:
-        await message.answer("❌ مشکلی در ذخیره عکس پیش آمد. لطفاً دوباره عکس رسید را ارسال کنید.")
+        await message.answer("✅ عکس رسید دریافت شد.\n\nلطفاً مبلغ واریزی را به تومان وارد کنید:")
 
+    except Exception as e:
+        await message.answer("⚠️ هنگام پردازش عکس خطایی رخ داد. لطفاً دوباره تلاش کنید.")
+        import logging; logging.error(f"Error in process_receipt_photo: {e}", exc_info=True)
 
 @patient_router.message(PatientPaymentInfo.waiting_for_amount)
 async def process_payment_amount(message: Message, state: FSMContext):
@@ -838,8 +887,9 @@ async def process_payment_tracking_code(message: Message, state: FSMContext, api
     # ارسال اطلاعات به API برای ساخت رکورد پرداخت
     created_payment = await api_client.create_payment(payment_payload)
 
+
     if created_payment:
-        # می‌توانید وضعیت سفارش را به 'در حال بررسی پرداخت' تغییر دهید
+        await api_client.update_patient_status(str(message.from_user.id), PatientStatus.PAYMENT_COMPLETED.value)
         await message.answer(
             "✅ اطلاعات پرداخت شما با موفقیت ثبت شد و برای بررسی ارسال گردید.\n"
             "پس از تایید پرداخت توسط بخش مالی، سفارش شما ارسال خواهد شد."

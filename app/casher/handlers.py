@@ -5,7 +5,8 @@ from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, FSInputFile
-
+from aiogram.filters import CommandStart, StateFilter
+from aiogram.fsm.state import default_state
 from app.core.API_Client import APIClient
 from .states import CasherReview
 from .keyboards import (
@@ -14,6 +15,7 @@ from .keyboards import (
     create_payment_verification_keyboard,
     create_rejection_back_keyboard,
     create_after_action_keyboard,
+    get_main_menu_keyboard,
 )
 
 casher_router = Router()
@@ -21,20 +23,20 @@ logger = logging.getLogger(__name__)
 
 
 # --- مرحله ۱: شروع فرآیند با دستور /casher_panel ---
-@casher_router.message(Command("start"))
-async def start_casher_panel(message: Message, state: FSMContext, api_client: APIClient):
+@casher_router.callback_query(CasherReview.main_menu,F.data == "start_box")
+async def start_casher_panel(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
     await state.clear()
-    await message.answer("در حال دریافت لیست تاریخ‌های نیازمند بررسی پرداخت...")
+    await callback.message.answer("در حال دریافت لیست تاریخ‌های نیازمند بررسی پرداخت...")
 
     dates_response = await api_client.get_pending_payment_dates()
     dates = dates_response if isinstance(dates_response, list) else []
 
     if not dates:
-        await message.answer("✅ در حال حاضر هیچ پرداخت جدیدی برای بررسی وجود ندارد.")
+        await callback.message.answer("✅ در حال حاضر هیچ پرداخت جدیدی برای بررسی وجود ندارد.")
         return
 
     keyboard = create_payment_dates_keyboard(dates)
-    await message.answer(
+    await callback.message.answer(
         "📅 لطفاً تاریخی که می‌خواهید پرداخت‌های آن را بررسی کنید، انتخاب نمایید:",
         reply_markup=keyboard,
     )
@@ -256,7 +258,7 @@ async def process_rejection_reason(message: Message, state: FSMContext, api_clie
 @casher_router.callback_query(F.data == "casher_back_to_dates")
 async def back_to_dates(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
     """از لیست بیماران به لیست تاریخ‌ها برمی‌گردد."""
-    await start_casher_panel(callback.message, state, api_client)
+    await start_casher_panel(callback, state, api_client)
     await callback.answer()
 
 
@@ -275,3 +277,18 @@ async def cancel_rejection_process(callback: CallbackQuery, state: FSMContext):
     """فرآیند وارد کردن دلیل رد را لغو می‌کند و به جزئیات پرداخت برمی‌گردد."""
     await callback.message.delete()
     await process_payment_choice(callback, state)
+
+
+@casher_router.message(StateFilter(default_state), F.text)
+async def handle_any_text(message: Message, state: FSMContext):
+
+    """
+    این هندلر به هر پیام متنی در حالت پیش‌فرض (وقتی کاربر در حال انجام کاری نیست)
+    پاسخ می‌دهد و منوی اصلی را نمایش می‌دهد.
+    """
+    await state.set_state(CasherReview.main_menu)
+
+    await message.answer(
+        "به پنل مشاوران خوش آمدید. لطفاً از منوی زیر برای شروع کار استفاده کنید:",
+        reply_markup=get_main_menu_keyboard()
+    )

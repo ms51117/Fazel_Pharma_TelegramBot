@@ -3,6 +3,15 @@
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
+    """منوی اصلی صندوق داروسازی فاضل."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🎯 شروع", callback_data="start_box")
+
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def create_payment_dates_keyboard(dates: list[str]) -> InlineKeyboardMarkup:
     """برای تاریخ‌هایی که پرداخت در انتظار دارند، کیبورد می‌سازد."""
     builder = InlineKeyboardBuilder()

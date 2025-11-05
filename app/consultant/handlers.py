@@ -204,8 +204,8 @@ async def process_drug_selection(callback: CallbackQuery, state: FSMContext):
     drug_id = int(callback.data.split("_")[2])
 
     data = await state.get_data()
-    selected_drugs: set[int] = data.get("selected_drugs", set())
-    available_drugs: list[dict] = data.get("available_drugs", [])
+    selected_drugs = set(data.get("selected_drugs", []))
+    available_drugs = data.get("available_drugs", [])
 
     # اگر دارو در لیست بود، حذفش کن. اگر نبود، اضافه‌اش کن.
     if drug_id in selected_drugs:
@@ -321,7 +321,6 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
         )
 
         try:
-            patient_telegram_id = data.get("patient_telegram_id")
             if patient_telegram_id:
                 await bot.send_message(
                     chat_id=patient_telegram_id,

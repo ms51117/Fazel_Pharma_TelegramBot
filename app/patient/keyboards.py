@@ -45,16 +45,7 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 # ===== کیبورد جدید: برای تایید فاکتور =====
-def get_invoice_approval_keyboard(order_id: int) -> InlineKeyboardMarkup:
-    """
-    کیبوردی برای تایید یا رد فاکتور توسط بیمار.
-    """
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="👍 تایید فاکتور و رفتن به پرداخت", callback_data=f"invoice_approve_{order_id}"),
-        InlineKeyboardButton(text="👎 رد کردن فاکتور", callback_data=f"invoice_reject_{order_id}")
-    )
-    return builder.as_markup()
+
 def get_invoice_action_keyboard(order_id: int) -> InlineKeyboardMarkup:
     """
     کیبوردی برای تایید یا درخواست ویرایش فاکتور توسط بیمار.
@@ -66,11 +57,6 @@ def get_invoice_action_keyboard(order_id: int) -> InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
-def get_cancel_keyboard() -> InlineKeyboardMarkup:
-    """یک کیبورد ساده برای لغو عملیات فعلی."""
-    builder = InlineKeyboardBuilder()
-    builder.button(text="❌ لغو عملیات", callback_data="cancel_action")
-    return builder.as_markup()
 
 
 def get_interactive_invoice_keyboard(items: List[Dict[str, Any]]) -> InlineKeyboardMarkup:

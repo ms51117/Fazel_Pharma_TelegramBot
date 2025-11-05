@@ -424,7 +424,7 @@ class APIClient:
             return None
     # --------------------------------------------------------------------------------------
 
-    async def update_patient_status(self, patient_id: int, new_status: str) -> bool:
+    async def update_patient_status(self, patient_id: str, new_status: str) -> bool:
         """
         Updates only the status of a specific patient.
         """
@@ -436,7 +436,7 @@ class APIClient:
             logging.error(f"Failed to update patient {patient_id} status to {new_status}: {e}")
             return False
 
-    async def update_patient(self, patient_telegram_id: int, patient_data: Dict[str, Any]) -> bool:
+    async def update_patient(self, patient_telegram_id: str, patient_data: Dict[str, Any]) -> bool:
         """
         Updates a patient's data. Can be used for full updates or partial ones (like status).
         """
@@ -560,28 +560,8 @@ class APIClient:
             logging.exception(f"An exception occurred while trying to update order {order_id}: {e}")
             return None
     # ----------------------------------------------------------
-    async def update_patient_details(self, patient_id: int, details: dict) -> Optional[dict]:
-        """
-        اطلاعات جزئی یک بیمار را با استفاده از اندپوینت PATCH آپدیت می‌کند.
-        این تابع برای ذخیره اطلاعات ارسال (آدرس، کد ملی و...) استفاده می‌شود.
-        """
-        url = f"{self._base_url}/patient/{patient_id}"
-        token = await self.login_check()
-        headers = {"Authorization": f"Bearer {token}"}
-        logging.info(f"Sending PATCH request to {url} to update patient details with payload: {details}")
-        try:
-            response = await self._client.patch(url, json=details, headers=headers)
-            response_data = response.json()
-            if response.status_code == 200:
-                logging.info(f"Patient {patient_id} details updated successfully.")
-                return response_data
-            else:
-                logging.error(
-                    f"Failed to update patient {patient_id} details. Status: {response.status_code}, Response: {response_data}")
-                return None
-        except Exception as e:
-            logging.exception(f"An exception occurred while updating patient {patient_id} details: {e}")
-            return None
+
+
 
     async def create_payment(self, payment_data: dict) -> Optional[dict]:
         """

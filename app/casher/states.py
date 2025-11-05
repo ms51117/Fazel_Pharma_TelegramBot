@@ -6,6 +6,7 @@ class CasherReview(StatesGroup):
     """
     FSM states for the casher's payment review process.
     """
+    main_menu = State()
     choosing_date = State()         # مرحله انتخاب تاریخ
     choosing_payment = State()      # مرحله انتخاب پرداخت (بیمار) از لیست
     verifying_payment = State()     # مرحله مشاهده جزئیات و تایید/رد پرداخت
