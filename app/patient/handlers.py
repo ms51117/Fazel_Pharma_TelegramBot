@@ -138,7 +138,7 @@ async def handle_new_or_incomplete_profile(message: Message, state: FSMContext):
     """اگر بیمار جدید است یا پروفایلش ناقص است، فرآیند ثبت‌نام را شروع می‌کند."""
     await state.set_state(PatientRegistration.waiting_for_full_name)
     await message.answer("سلام وقت بخیر: \n"
-                         "حجم پیامها بسار بالاست و ممکنه چند روز زمان ببره تا نوبت مشاوره شما برسه , پیشاپیش ممنون از صبوریتون \n"
+                         "حجم پیامها بیسار بالاست و ممکنه چند روز زمان ببره تا نوبت مشاوره شما برسه , پیشاپیش ممنون از صبوریتون \n"
                          "\n"
                          "اگر مشهد هستید و امکان مراجعه حضوری دارین عصر ها بین ساعت 17 تا 22 میتونید به داروخانه مراجعه کنید\n"
                          "\n"
@@ -303,7 +303,8 @@ async def process_special_conditions(message: Message, state: FSMContext):
     await state.set_state(PatientRegistration.waiting_for_photos)
     await message.answer(
         "حالا لطفاً عکس‌های مربوط به مشکل خود را ارسال کنید.\n"
-        "پس از ارسال تمام عکس‌ها، روی دکمه 'پایان ثبت‌نام' کلیک کنید.",
+        "پس از ارسال تمام عکس‌ها، روی دکمه 'پایان ثبت‌نام' کلیک کنید.\n"
+        "اگر نمیخواهید عکسی وارد کنید روی دکمه خیر کافی است کلیک کنید",
         reply_markup=get_photo_confirmation_keyboard()
     )
 

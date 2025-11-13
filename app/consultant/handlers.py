@@ -86,7 +86,14 @@ async def process_date_choice(callback: CallbackQuery, state: FSMContext, api_cl
 # --- مرحله ۳: دریافت بیمار و نمایش اطلاعات کامل او ---
 @consultant_router.callback_query(ConsultantFlow.choosing_patient, F.data.startswith("consultant_patient_"))
 async def process_patient_choice(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
-    patient_id = int(callback.data.split("_")[-1])
+
+    await callback.answer("✅ انتخاب دریافت شد. در حال بارگذاری اطلاعات...")
+    try:
+        patient_id = int(callback.data.split("_")[-1])
+    except (ValueError, IndexError):
+        await callback.message.edit_text("خطا در پردازش شناسه بیمار.")
+        return
+
     await state.update_data(selected_patient_id=patient_id)
 
     await callback.message.edit_text(f"🔍 در حال دریافت اطلاعات کامل بیمار با شناسه {patient_id}...")
@@ -100,12 +107,13 @@ async def process_patient_choice(callback: CallbackQuery, state: FSMContext, api
 
     # ذخیره اطلاعات کلیدی برای مراحل بعدی
     await state.update_data(patient_telegram_id=patient_details.get("user", {}).get("telegram_id"))
+    await state.update_data(full_name=patient_details.get("user", {}).get("full_name"))
 
     # آماده‌سازی متن نمایش اطلاعات
     info_text = (
         f"📄 **اطلاعات بیمار:** `{patient_details.get('full_name')}`\n\n"
         f"▪️ **شناسه تلگرام:** `{patient_details.get('telegram_id')}`\n"
-        f"▪️ **جنسیت:** {'مرد' if patient_details.get('gender') == 'male' else 'زن'}\n"
+        f"▪️ **جنسیت:** {'زن' if patient_details.get('gender') == 'male' else 'مرد'}\n"
         f"▪️ **سن:** {patient_details.get('age')} سال\n"
         f"▪️ **وزن:** {patient_details.get('weight')} کیلوگرم\n"
         f"▪️ **قد:** {patient_details.get('height')} سانتی‌متر\n\n"
@@ -120,12 +128,12 @@ async def process_patient_choice(callback: CallbackQuery, state: FSMContext, api
     # ارسال عکس‌ها
     photo_paths = patient_details.get("photo_paths", [])
     if photo_paths:
+        await callback.message.answer("🖼️ در حال ارسال تصاویر ارسالی بیمار...")
+
         try:
             # --- اصلاح اصلی اینجاست ---
             # تبدیل لیست مسیرهای فایل به لیست آبجکت‌های FSInputFile
             media_group = [InputMediaPhoto(media=FSInputFile(path)) for path in photo_paths]
-
-
 
             await callback.message.answer_media_group(media=media_group)
 
@@ -236,7 +244,7 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
     data = await state.get_data()
     selected_drugs_ids = data.get('selected_drugs')
     patient_telegram_id = data.get('selected_patient_id')  # <--- نام state را از مرحله ۳ چک کنید (selected_patient_id)
-    patient_full_name = data.get('patient_full_name', 'بیمار')  # <--- نام بیمار را هم از state می‌خوانیم
+    patient_full_name = data.get('full_name', 'بیمار')  # <--- نام بیمار را هم از state می‌خوانیم
     consultant_telegram_id = callback.from_user.id
 
 
