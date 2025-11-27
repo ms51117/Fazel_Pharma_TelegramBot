@@ -1,10 +1,13 @@
 # app/consultant/handlers.py
 
 import logging
+import os
+from datetime import datetime
+
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, InputFile, InputMediaPhoto
+from aiogram.types import Message, CallbackQuery, InputFile, InputMediaPhoto, ReplyKeyboardRemove
 from aiogram.types import Message, CallbackQuery, FSInputFile # <--- این را اضافه کنید
 from aiogram.fsm.context import FSMContext
 from decimal import Decimal # <--- این خط را اضافه کنید
@@ -26,11 +29,70 @@ from .keyboards import (
     get_start_prescription_keyboard, # <--- جدید
     create_disease_types_keyboard,   # <--- جدید
     create_drugs_keyboard,
-    get_main_menu_keyboard# <--- جدید
+    get_main_menu_keyboard,
+    get_consultant_chat_keyboard
 )
 
 consultant_router = Router()
 logger = logging.getLogger(__name__)
+
+
+# <--- تابع کمکی جدید برای نمایش اطلاعات کامل بیمار --->
+async def show_patient_full_info(message: Message, state: FSMContext, api_client: APIClient, patient_telegram_id: str):
+    """جزئیات جامع بیمار و تاریخچه چت را نمایش می‌دهد"""
+    patient = await api_client.get_patient_details_by_telegram_id(patient_telegram_id)
+    if not patient:
+        await message.answer("❌ اطلاعات بیمار یافت نشد.")
+        return
+
+
+    info = (
+        f"📋 **{patient.get('full_name')}**\n"
+        f"شناسه: `{patient.get('telegram_id')}`\n"
+        f"جنسیت :  { 'مرد' if patient.get('sex') == 'male' else 'زن'}\n"
+        f"سن: {patient.get('age')}  •  وزن: {patient.get('weight')}  •  قد: {patient.get('height')}\n\n"
+        f"🩺 بیماری خاص: {patient.get('specific_diseases') or '—'}\n"
+        f"🔹 شرایط ویژه: {patient.get('special_conditions') or '—'}"
+    )
+    await message.answer(info, parse_mode="Markdown")
+
+    photos = patient.get("photo_paths", [])
+    if photos:
+        try:
+            media = [InputMediaPhoto(media=FSInputFile(p)) for p in photos]
+            await message.answer_media_group(media=media)
+        except Exception as e:
+            logger.warning(f"Cannot send photos: {e}")
+    patient_id = patient.get("patient_id")
+
+    # تاریخچه چت
+    chats = await api_client.read_messages_history_by_patient_id(patient_id)
+
+    if not chats:
+        await message.answer("هیچ گفتگویی تا کنون ثبت نشده است.")
+    else:
+        for msg in chats:
+            # حالا msg قطعاً dict است
+            sender_is_patient = msg.get("messages_sender", False)
+            text_content = msg.get("messages", "")
+            attachments = msg.get("attachment_path", [])
+
+            sender_title = "👨‍⚕️ بیمار" if sender_is_patient else "👤 شما"
+
+            if text_content:
+                await message.answer(f"{sender_title}:\n{text_content}")
+            if attachments:
+                # اگر فایل ضمیمه هست (عکس/ویس)
+                for path in attachments:
+                    if path.endswith(".jpg") or path.endswith(".png"):
+                        await message.answer_photo(FSInputFile(path))
+                    elif path.endswith(".ogg") or path.endswith(".mp3"):
+                        await message.answer_voice(FSInputFile(path))
+
+    await message.answer("اکنون می‌توانید گفتگو را ادامه دهید یا از دکمه‌ها استفاده کنید:",
+                         reply_markup=get_consultant_chat_keyboard())
+    await state.update_data(selected_patient_id=patient_id)
+    await state.set_state(ConsultantFlow.in_chat_with_patient)
 
 
 # --- مرحله ۱: شروع کار مشاور با دستور /start ---
@@ -57,7 +119,6 @@ async def consultant_start(callback: CallbackQuery, state: FSMContext, api_clien
 
 
 
-
 # --- مرحله ۲: دریافت تاریخ و نمایش بیماران آن روز ---
 @consultant_router.callback_query(ConsultantFlow.choosing_date, F.data.startswith("consultant_date_"))
 async def process_date_choice(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
@@ -74,6 +135,9 @@ async def process_date_choice(callback: CallbackQuery, state: FSMContext, api_cl
         await state.clear()
         return
 
+    patient_ids = [p.get("telegram_id") for p in patients]
+    await state.update_data(patient_ids_for_date=patient_ids)
+
     keyboard = create_patients_keyboard(patients)
     await callback.message.edit_text(
         f"👥 لیست بیماران ثبت‌نام شده در تاریخ {date}:\nلطفاً بیمار مورد نظر را برای مشاهده جزئیات انتخاب کنید.",
@@ -84,95 +148,175 @@ async def process_date_choice(callback: CallbackQuery, state: FSMContext, api_cl
 
 
 # --- مرحله ۳: دریافت بیمار و نمایش اطلاعات کامل او ---
+
+
 @consultant_router.callback_query(ConsultantFlow.choosing_patient, F.data.startswith("consultant_patient_"))
 async def process_patient_choice(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
+    await callback.message.delete()  # <--- پیام قبلی با دکمه‌های اینلاین را حذف می‌کنیم
 
-    await callback.answer("✅ انتخاب دریافت شد. در حال بارگذاری اطلاعات...")
     try:
-        patient_id = int(callback.data.split("_")[-1])
+        patient_telegram_id = str(callback.data.split("_")[-1])
+        await state.update_data(patient_telegram_id=patient_telegram_id)
     except (ValueError, IndexError):
-        await callback.message.edit_text("خطا در پردازش شناسه بیمار.")
+        await callback.message.answer("خطا در پردازش شناسه بیمار.")
         return
 
-    await state.update_data(selected_patient_id=patient_id)
+    # <--- به‌روزرسانی state با بیمار انتخابی --- >
+    data = await state.get_data()
 
-    await callback.message.edit_text(f"🔍 در حال دریافت اطلاعات کامل بیمار با شناسه {patient_id}...")
+    await state.update_data(selected_date=data.get("selected_date"))
 
-    patient_details = await api_client.get_patient_details_by_telegram_id(patient_id)
-
-    if not patient_details:
-        await callback.message.edit_text("خطا: اطلاعات این بیمار یافت نشد!")
-        await state.clear()
-        return
-
-    # ذخیره اطلاعات کلیدی برای مراحل بعدی
-    await state.update_data(patient_telegram_id=patient_details.get("user", {}).get("telegram_id"))
-    await state.update_data(full_name=patient_details.get("user", {}).get("full_name"))
-
-    # آماده‌سازی متن نمایش اطلاعات
-    info_text = (
-        f"📄 **اطلاعات بیمار:** `{patient_details.get('full_name')}`\n\n"
-        f"▪️ **شناسه تلگرام:** `{patient_details.get('telegram_id')}`\n"
-        f"▪️ **جنسیت:** {'زن' if patient_details.get('gender') == 'male' else 'مرد'}\n"
-        f"▪️ **سن:** {patient_details.get('age')} سال\n"
-        f"▪️ **وزن:** {patient_details.get('weight')} کیلوگرم\n"
-        f"▪️ **قد:** {patient_details.get('height')} سانتی‌متر\n\n"
-        f"📝 **شرح مشکل بیمار:**\n"
-        f"{patient_details.get('specific_diseases')}"
-        f"▪️ **شرایط خاص:** {patient_details.get('special_conditions')} \n"
-
-    )
-
-    await callback.message.edit_text(info_text, parse_mode="Markdown")
-
-    # ارسال عکس‌ها
-    photo_paths = patient_details.get("photo_paths", [])
-    if photo_paths:
-        await callback.message.answer("🖼️ در حال ارسال تصاویر ارسالی بیمار...")
-
-        try:
-            # --- اصلاح اصلی اینجاست ---
-            # تبدیل لیست مسیرهای فایل به لیست آبجکت‌های FSInputFile
-            media_group = [InputMediaPhoto(media=FSInputFile(path)) for path in photo_paths]
-
-            await callback.message.answer_media_group(media=media_group)
-
-        except Exception as e:
-            # لاگ خطا را بهبود می‌بخشیم
-            logger.error(f"Failed to send media group for patient {patient_id}. Error: {e}")
-    else:
-        # اگر عکسی وجود نداشت، فقط متن را بفرست
-        await callback.message.answer("این بیمار عکسی ارسال نکرده است.")
-
-    await callback.message.answer(
-        "برای ادامه، روی دکمه زیر کلیک کنید:",
-        reply_markup=get_start_prescription_keyboard()
-    )
-
-    await state.set_state(ConsultantFlow.viewing_patient_details)
+    # <--- فراخوانی تابع کمکی --->
+    await show_patient_full_info(callback.message, state, api_client, patient_telegram_id)
     await callback.answer()
 
 
-@consultant_router.callback_query(ConsultantFlow.viewing_patient_details, F.data == "start_prescription")
-async def process_start_prescription(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
-    await callback.message.edit_text("در حال دریافت لیست انواع بیماری‌ها...")
+@consultant_router.message(ConsultantFlow.in_chat_with_patient, F.text == "✍️ شروع تجویز")
+async def handle_start_prescription_from_chat(message: Message, state: FSMContext, api_client: APIClient):
+    # کیبورد Reply را حذف می‌کنیم تا برای مراحل بعد مزاحم نباشد
+    await message.answer("در حال آماده‌سازی برای تجویز...", reply_markup=ReplyKeyboardRemove())
 
+    # این بخش دقیقا مانند منطق process_start_prescription قبلی شماست
     disease_types = await api_client.get_all_disease_types()
     if not disease_types:
-        await callback.message.edit_text("خطا: هیچ نوع بیماری در سیستم تعریف نشده است.")
+        await message.answer("خطا: هیچ نوع بیماری در سیستم تعریف نشده است.")
         await state.clear()
         return
 
     keyboard = create_disease_types_keyboard(disease_types)
-    await callback.message.edit_text(
+    await message.answer(
         "لطفاً دسته بندی بیماری را مشخص کنید:",
         reply_markup=keyboard
     )
 
-    # در FSM Storage یک مجموعه خالی برای داروهای انتخابی ایجاد می‌کنیم
     await state.update_data(selected_drugs=set())
     await state.set_state(ConsultantFlow.choosing_disease_type)
-    await callback.answer()
+
+
+# --- مرحله ۴.۱: مدیریت دکمه‌های بیمار قبلی و بعدی ---
+@consultant_router.message(ConsultantFlow.in_chat_with_patient, F.text == "👤 بیمار بعدی")
+async def next_patient(message: Message, state: FSMContext, api_client: APIClient):
+    data = await state.get_data()
+    date = data.get("selected_date")
+    current_id = data.get("selected_patient_id")
+
+    patients_data = await api_client.get_waiting_for_consultation_patients_by_date(date)
+    patients = patients_data.get("patients", [])
+    ids = [p["telegram_id"] for p in patients]
+    if current_id not in ids:
+        await message.answer("📅 لیست امروز تغییر کرده است، از ابتدا وارد شوید.")
+        await state.clear()
+        return
+
+    idx = ids.index(current_id)
+    if idx + 1 >= len(ids):
+        await message.answer("آخرین بیمار این تاریخ هستید.")
+        return
+    await show_patient_full_info(message, state, api_client, ids[idx + 1])
+
+
+@consultant_router.message(ConsultantFlow.in_chat_with_patient, F.text == "👤 بیمار قبلی")
+async def prev_patient(message: Message, state: FSMContext, api_client: APIClient):
+    data = await state.get_data()
+    date = data.get("selected_date")
+    current_id = data.get("selected_patient_id")
+
+    patients_data = await api_client.get_waiting_for_consultation_patients_by_date(date)
+    patients = patients_data.get("patients", [])
+    ids = [p["telegram_id"] for p in patients]
+    if current_id not in ids:
+        await message.answer("📅 لیست امروز تغییر کرده است، از ابتدا وارد شوید.")
+        await state.clear()
+        return
+
+    idx = ids.index(current_id)
+    if idx - 1 < 0:
+        await message.answer("این اولین بیمار امروز است.")
+        return
+    await show_patient_full_info(message, state, api_client, ids[idx - 1])
+
+# -----------------------------
+# --- مرحله ۴.۳: مدیریت ارسال پیام متنی از مشاور به بیمار ---
+@consultant_router.message(ConsultantFlow.in_chat_with_patient)
+async def handle_consultant_chat_message(message: Message, state: FSMContext, api_client: APIClient, bot: Bot):
+    # این هندلر باید بعد از هندلر دکمه‌ها باشد تا اولویت با دکمه‌ها باشد
+    data = await state.get_data()
+    patient_id = data.get("selected_patient_id")
+    patient_telegram_id = data.get("patient_telegram_id")
+    consultant_telegram_id = message.from_user.id
+    response = await api_client.get_user_details_by_telegram_id(consultant_telegram_id)
+
+
+    consultant_id = response.get("user_id")
+
+    text_content = None
+    attachment_paths = []  # برای ذخیره مسیر فایل‌ها
+
+    user_storage_path = os.path.join("patient_files", str(patient_telegram_id))
+    os.makedirs(user_storage_path, exist_ok=True)
+
+    # ===== پیام متنی =====
+    if message.text:
+        text_content = message.text
+
+    # ===== عکس =====
+    elif message.photo:
+        photo = message.photo[-1]
+        try:
+            file_info = await bot.get_file(photo.file_id)
+            file_path_on_telegram = file_info.file_path
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_extension = os.path.splitext(file_path_on_telegram)[1] or ".jpg"
+            filename = f"photo_{timestamp}{file_extension}"
+            destination_path = os.path.join(user_storage_path, filename)
+
+            await bot.download_file(file_path_on_telegram, destination=destination_path)
+            absolute_path = os.path.abspath(destination_path)
+            attachment_paths.append(absolute_path)
+
+        except Exception as e:
+            logging.error(f"Error downloading photo for {patient_telegram_id}: {e}")
+
+    # ===== ویس =====
+    elif message.voice:
+        voice = message.voice
+        try:
+            file_info = await bot.get_file(voice.file_id)
+            file_path_on_telegram = file_info.file_path
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_extension = os.path.splitext(file_path_on_telegram)[1] or ".ogg"
+            filename = f"voice_{timestamp}{file_extension}"
+            destination_path = os.path.join(user_storage_path, filename)
+
+            await bot.download_file(file_path_on_telegram, destination=destination_path)
+            absolute_path = os.path.abspath(destination_path)
+            attachment_paths.append(absolute_path)
+
+        except Exception as e:
+            logging.error(f"Error downloading voice for {patient_telegram_id}: {e}")
+
+    else:
+        await message.answer("فقط ارسال متن، عکس یا ویس پشتیبانی می‌شود.")
+        return
+
+    # --- ساخت و ارسال پیام در API ---
+    success = await api_client.create_message(
+        patient_id=patient_id,
+        user_id=consultant_id,
+        message_content=text_content,
+        messages_sender=False,
+        attachments=attachment_paths  # می‌تونه []
+    )
+
+    if success:
+        confirm_text = "✅ پیام (یا رسانه) شما ارسال شد."
+        await message.answer(confirm_text)
+    else:
+        await message.answer("❌ خطا در ارسال پیام. لطفاً بعداً امتحان کنید.")
+# -----------------------------
+
 
 
 # --- مرحله ۵: انتخاب نوع بیماری و نمایش داروها ---
@@ -243,7 +387,7 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
 
     data = await state.get_data()
     selected_drugs_ids = data.get('selected_drugs')
-    patient_telegram_id = data.get('selected_patient_id')  # <--- نام state را از مرحله ۳ چک کنید (selected_patient_id)
+    patient_telegram_id = data.get('patient_telegram_id')  # <--- نام state را از مرحله ۳ چک کنید (selected_patient_id)
     patient_full_name = data.get('full_name', 'بیمار')  # <--- نام بیمار را هم از state می‌خوانیم
     consultant_telegram_id = callback.from_user.id
 

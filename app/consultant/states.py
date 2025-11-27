@@ -11,6 +11,8 @@ class ConsultantFlow(StatesGroup):
     choosing_disease_type = State()
     choosing_drugs = State()
     sending_final_message = State()
+    in_chat_with_patient = State() # <--- State جدید
+
 
     # حالت‌های فرعی (برای ذخیره اطلاعات)
     # با استفاده از FSM Storage، می‌توانیم اطلاعات انتخاب شده را در هر مرحله ذخیره کنیم.

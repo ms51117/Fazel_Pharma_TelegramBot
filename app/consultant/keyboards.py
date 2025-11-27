@@ -1,7 +1,7 @@
 # app/consultant/keyboards.py
 
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
 
 def create_dates_keyboard(dates: list[str]) -> InlineKeyboardMarkup:
@@ -114,3 +114,15 @@ def get_next_patient_keyboard():
         ]
     )
     return keyboard
+
+
+
+def get_consultant_chat_keyboard() -> ReplyKeyboardMarkup:
+    """کیبورد مشاور در حالت گفت‌وگو با بیمار"""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="👤 بیمار قبلی"), KeyboardButton(text="👤 بیمار بعدی")],
+            [KeyboardButton(text="✍️ شروع تجویز")]
+        ],
+        resize_keyboard=True
+    )

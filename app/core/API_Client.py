@@ -235,7 +235,7 @@ class APIClient:
             logging.error(f"Error fetching patients for date {date}: {e}")
             return None
 
-    async def get_patient_details_by_telegram_id(self, telegram_id: int) -> dict | None:
+    async def get_patient_details_by_telegram_id(self, telegram_id: str) -> dict | None:
         """Fetches full details of a single patient by their database ID."""
         try:
             token = await self.login_check()
@@ -317,9 +317,9 @@ class APIClient:
             patient_id: int,
             user_id: Optional[int] = None,
             message_content: Optional[str] = None,
-            messages_sender: bool = True,
+            messages_sender: Optional[bool] = True,
             attachments: Optional[List[str]] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[bytes] | None:
         """
         یک پیام/تیکت جدید در سیستم ایجاد می‌کند. (نسخه کامل و انعطاف‌پذیر)
 
@@ -351,7 +351,7 @@ class APIClient:
             payload = {
                 "patient_id": patient_id,
                 "user_id": user_id,  # می‌تواند None باشد
-                "messages": message_content,  # می‌تواند None باشد
+                "messages": message_content ,  # می‌تواند None باشد
                 "messages_sender": messages_sender,
                 "messages_seen": False,  # پیام جدید همیشه خوانده نشده است
                 "attachment_path": attachments if attachments else None  # اگر None بود، لیست خالی ارسال شود
@@ -363,21 +363,21 @@ class APIClient:
 
             if response.status_code == 201:  # 201 Created
                 created_message = response.json()
-                logging.info(f"Successfully created message with ID: {created_message.get('message_id')}")
-                return created_message
+                logging.info(f"Successfully created message with ID: {created_message.get('messages_id')}")
+                return True
             else:
                 # اگر کد وضعیت خطا بود، آن را لاگ و مدیریت کن
                 logging.error(f"Failed to create message. Status: {response.status_code}, Response: {response.text}")
                 response.raise_for_status()  # این خط جزئیات بیشتری از خطا را نمایش می‌دهد
-                return None
+                return False
 
         except httpx.HTTPStatusError as e:
             logging.error(f"HTTP status error while creating message for patient {patient_id}: {e}")
-            return None
+            return False
         except Exception as e:
             logging.error(f"An unexpected error occurred while creating message for patient {patient_id}: {e}",
                           exc_info=True)
-            return None
+            return False
 
     # ---------------------------------------------------------------------------------------------------------
     async def create_order(self, patient_id: int, user_id: int, drug_ids: list[int]) -> dict:
@@ -691,6 +691,37 @@ class APIClient:
         except Exception as e:
             logging.error(f"Error updating payment {payment_id}: {e}")
             return None
+
+    async def read_messages_history_by_patient_id(self, patient_id: int) -> list[dict]:
+        """
+        تاریخچه چت بین مشاور و بیمار را از سرور دریافت می‌کند.
+        پاسخ باید شامل لیست پیام‌ها باشد.
+        """
+        token = await self.login_check()
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"{self._base_url}/message/history/{patient_id}"
+
+        try:
+            response = await self._client.get(url, headers=headers)
+            if response.status_code == 200 or response.status_code == 200:
+                # ✅ await برای json ضروری است
+                data = response.json()
+                # بررسی نوع داده – بک‌اند گاهی ممکن است dict برگرداند
+                if isinstance(data, list):
+                    return data
+                elif isinstance(data, dict):
+                    return [data]
+                else:
+                    logging.error(f"Unexpected data type from /message/history/: {type(data)}")
+                    return []
+            else:
+                text = response.text
+                logging.error(
+                    f"Error response {response.status_code if hasattr(response, 'status_code') else response.status_code}: {text}")
+                return []
+        except Exception as e:
+            logging.error(f"Error fetching messages: {e}", exc_info=True)
+            return []
 
     async def close(self):
         """
