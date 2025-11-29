@@ -675,21 +675,29 @@ class APIClient:
         """
         Updates a payment record using PATCH.
         Used for approving or rejecting a payment.
-
-        Args:
-            payment_list_id: The ID of the payment to update.
-            payload: A dictionary matching the PaymentListUpdate schema,
-                     e.g., {"payment_status": "ACCEPTED", "user_id": 1}
         """
         try:
             token = await self.login_check()
             headers = {"Authorization": f"Bearer {token}"}
             url = f"{self._base_url}/payment/{payment_id}"
-            # مسیر اندپوینت خود را جایگزین کنید
-            response = await self._client.patch(url,headers=headers, json=payload)
+
+            logging.info(f"Sending PATCH to {url} with payload: {payload}")  # لاگ کردن دیتای ارسالی
+
+            response = await self._client.patch(url, headers=headers, json=payload)
+
+            # اگر کد وضعیت 400 تا 500 باشد، اینجا خطا پرتاب می‌شود و متن آن را می‌خوانیم
+            response.raise_for_status()
+
             return response.json()
+
+        except httpx.HTTPStatusError as e:
+            # === این بخش دلیل دقیق ارور 422 را چاپ می‌کند ===
+            logging.error(f"HTTP Error {e.response.status_code} for payment {payment_id}.")
+            logging.error(f"Server Response: {e.response.text}")
+            return None
+
         except Exception as e:
-            logging.error(f"Error updating payment {payment_id}: {e}")
+            logging.error(f"Unexpected error updating payment {payment_id}: {e}", exc_info=True)
             return None
 
     async def read_messages_history_by_patient_id(self, patient_id: int) -> list[dict]:
@@ -722,6 +730,94 @@ class APIClient:
         except Exception as e:
             logging.error(f"Error fetching messages: {e}", exc_info=True)
             return []
+
+    # app/core/services/api_client.py
+
+    async def get_order_items(self, order_id: int) -> list[dict]:
+        """
+        دریافت لیست اقلام یک سفارش خاص.
+        """
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            # فرض بر این است که اندپوینتی برای گرفتن جزئیات سفارش دارید
+            # اگر ندارید، باید بر اساس ساختار دیتابیس خودتان پیاده‌سازی کنید
+            url = f"{self._base_url}/order/{order_id}"
+
+            response = await self._client.get(url, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                # فرض می‌کنیم خروجی شامل لیستی به نام items یا drugs است
+                return data.get("items", [])
+            return []
+        except Exception as e:
+            logging.error(f"Error fetching order items: {e}")
+            return []
+
+    async def get_order_by_id(self, order_id: int) -> dict | None:
+        """
+        دریافت جزئیات کامل یک سفارش با استفاده از ID
+        """
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            # طبق روت‌های شما در full_project_code، روت سفارش /order است
+            url = f"{self._base_url}/order/{order_id}"
+
+            logging.info(f"Fetching order details for ID: {order_id}")
+            response = await self._client.get(url, headers=headers)
+
+            # اگر 404 بدهد یعنی پیدا نشده
+            if response.status_code == 404:
+                logging.warning(f"Order {order_id} not found.")
+                return None
+
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logging.error(f"Error fetching order {order_id}: {e}")
+            return None
+
+    async def get_drug_details_by_id(self, drug_id: int) -> dict | None:
+        """
+        دریافت مشخصات یک دارو (نام، قیمت و...) با استفاده از ID
+        """
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            # طبق روت‌های شما، روت دارو /drug است
+            url = f"{self._base_url}/drug/{drug_id}"
+
+            # logging.info(f"Fetching drug details for ID: {drug_id}") # لاگ زیاد نشود کامنت کردم
+            response = await self._client.get(url, headers=headers)
+
+            if response.status_code == 404:
+                return None
+
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logging.error(f"Error fetching drug {drug_id}: {e}")
+            return None
+
+    async def get_user_details_by_id(self, user_id: int) -> dict | None:
+        """
+        دریافت مشخصات کاربر (مشاور/پزشک) با استفاده از ID دیتابیس
+        (متد قبلی شما با telegram_id کار می‌کرد، این با id کار می‌کند)
+        """
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            # فرض بر این است که روت user امکان خواندن با ID را دارد (مثلا /user/{id})
+            # اگر روت خاصی دارید مثل /user/read/{id} آدرس را تغییر دهید
+            url = f"{self._base_url}/user/{user_id}"
+
+            response = await self._client.get(url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logging.error(f"Error fetching user {user_id}: {e}")
+            return None
 
     async def close(self):
         """

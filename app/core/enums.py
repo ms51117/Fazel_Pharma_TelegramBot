@@ -34,7 +34,7 @@ class OrderStatusEnum(str, enum.Enum):
     REJECTED = "Rejected"
     PAID = "Paid"
     SENT = "Sent"
-    DELIVERED = "Delived"
+    DELIVERED = "Delivered"
 
 
 class PaymentStatusEnum(str, enum.Enum):

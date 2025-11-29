@@ -39,3 +39,9 @@ class PatientPaymentInfo(StatesGroup):
     waiting_for_receipt_photo = State()
     waiting_for_amount = State()
     waiting_for_tracking_code = State()
+
+class PatientConsultation(StatesGroup):
+    """
+    وضعیت مربوط به چت با مشاور
+    """
+    chatting = State()

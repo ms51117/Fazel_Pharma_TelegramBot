@@ -13,15 +13,16 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.state import default_state  # ### <-- ایمپورت جدید
 from aiogram.filters import CommandStart, StateFilter # ### <-- ایمپورت جدید
 from aiogram.filters import StateFilter
-
+from aiogram.types import FSInputFile, Message
+from aiogram.fsm.context import FSMContext
 
 # ایمپورت‌های پروژه شما
-from app.patient.states import PatientRegistration, PatientShippingInfo, PatientPaymentInfo
+from app.patient.states import PatientRegistration, PatientShippingInfo, PatientPaymentInfo, PatientConsultation
 from app.patient.keyboards import (
     get_gender_keyboard,
     get_photo_confirmation_keyboard,
     get_interactive_invoice_keyboard,
-    get_shipping_info_confirmation_keyboard, get_invoice_action_keyboard
+    get_shipping_info_confirmation_keyboard, get_invoice_action_keyboard, get_consultation_keyboard
 )
 from app.core.API_Client import APIClient
 from app.core.enums import PatientStatus, OrderStatusEnum
@@ -30,7 +31,40 @@ from app.core.enums import PatientStatus, OrderStatusEnum
 patient_router = Router(name="patient")
 logger = logging.getLogger(__name__)
 
+async def save_telegram_file(
+    bot: Bot,
+    file_id: str,
+    telegram_id: int,
+    purpose: str = "file"
+) -> Optional[str]:
+    """
+    یک فایل (عکس/ویس) را از تلگرام دانلود و ذخیره می‌کند.
+    """
+    try:
+        user_storage_path = os.path.join("patient_files", str(telegram_id))
+        os.makedirs(user_storage_path, exist_ok=True)
 
+        file_info = await bot.get_file(file_id)
+        file_path_on_telegram = file_info.file_path
+
+        # تعیین پسوند فایل
+        ext = os.path.splitext(file_path_on_telegram)[1]
+        if not ext:
+            ext = ".jpg" if purpose.startswith("photo") else ".ogg"
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{telegram_id}_{timestamp}_{purpose}{ext}"
+        destination_path = os.path.join(user_storage_path, filename)
+
+        await bot.download_file(file_path_on_telegram, destination=destination_path)
+
+        absolute_path = os.path.abspath(destination_path)
+        logger.info(f"File saved for user {telegram_id} at: {absolute_path}")
+        return absolute_path
+
+    except Exception as e:
+        logger.error(f"Error downloading file {file_id}: {e}")
+        return None
 
 async def save_telegram_photo(
     bot: Bot,
@@ -97,7 +131,7 @@ async def main_patient_handler(message: Message, state: FSMContext, api_client: 
     telegram_id = message.from_user.id
 
     # دریافت پروفایل بیمار از بک‌اند
-    patient_profile = await api_client.get_patient_details_by_telegram_id(telegram_id)
+    patient_profile = await api_client.get_patient_details_by_telegram_id(str(telegram_id))
 
     # --- شاخه‌بندی بر اساس وضعیت بیمار (PatientStatus) ---
 
@@ -107,7 +141,8 @@ async def main_patient_handler(message: Message, state: FSMContext, api_client: 
 
     # وضعیت ۲: بیمار منتظر مشاوره است
     if patient_profile.get("patient_status") == PatientStatus.AWAITING_CONSULTATION.value:
-        return await handle_awaiting_consultation(message)
+        patient_id = patient_profile.get("patient_id")
+        return await handle_awaiting_consultation(message,state,api_client,patient_id,bot)
 
     # وضعیت ۳: پیش‌فاکتور برای بیمار صادر شده و منتظر تایید اوست
     if patient_profile.get("patient_status") == PatientStatus.AWAITING_INVOICE_APPROVAL.value:
@@ -149,14 +184,102 @@ async def handle_new_or_incomplete_profile(message: Message, state: FSMContext):
     )
 
 
-async def handle_awaiting_consultation(message: Message):
-    """اگر بیمار منتظر مشاوره است، به او پیام مناسب نمایش می‌دهد."""
-    await message.answer(
-        "پرونده شما با موفقیت ثبت شده و در صف بررسی مشاوران قرار دارد.\n"
-        "به محض آماده شدن پیش‌فاکتور، از طریق همین ربات به شما اطلاع داده خواهد شد.\n\n"
-        "از شکیبایی شما سپاسگزاریم."
-    )
 
+async def handle_awaiting_consultation(message: Message, state: FSMContext, api_client: APIClient, patient_id: int,
+                                       bot: Bot):
+    """ورود به محیط چت با مشاور و نمایش تاریخچه کامل"""
+
+    # ذخیره patient_id برای استفاده در پیام‌های بعدی
+    await state.update_data(chat_patient_id=patient_id)
+
+    # دریافت تاریخچه پیام‌ها
+    history = await api_client.read_messages_history_by_patient_id(patient_id)
+
+    if history:
+        await message.answer("📜 **تاریخچه گفتگو:**")
+
+        for msg in history:
+            # تشخیص فرستنده
+            is_sender_me = msg.get('messages_sender', True)
+            sender_title = "👤 شما" if is_sender_me else "👨‍⚕️ مشاور"
+
+            text_content = msg.get('messages')
+
+            # دریافت لیست فایل‌های پیوست
+            raw_attachments = msg.get('attachment_path')
+            attachments = []
+
+            # نرمال‌سازی لیست پیوست‌ها (ممکن است استرینگ باشد یا لیست)
+            if isinstance(raw_attachments, list):
+                attachments = raw_attachments
+            elif isinstance(raw_attachments, str) and raw_attachments:
+                # گاهی اوقات دیتابیس مسیر را به صورت استرینگ برمی‌گرداند
+                import ast
+                try:
+                    # تلاش برای تبدیل رشته لیست‌مانند به لیست واقعی
+                    attachments = ast.literal_eval(raw_attachments)
+                    if not isinstance(attachments, list):
+                        attachments = [raw_attachments]
+                except:
+                    attachments = [raw_attachments]
+
+            # --- مرحله ۱: نمایش متن پیام ---
+            if text_content:
+                await message.answer(f"**{sender_title}:**\n{text_content}", parse_mode="Markdown")
+            elif not attachments:
+                # اگر نه متن بود نه فایل
+                await message.answer(f"**{sender_title}:**\n[پیام خالی]", parse_mode="Markdown")
+
+            # --- مرحله ۲: نمایش و ارسال فایل‌ها ---
+            if attachments:
+                for file_path in attachments:
+                    # پاکسازی مسیر (گاهی اوقات کاراکترهای اضافی دارد)
+                    file_path = str(file_path).strip()
+
+                    if not os.path.exists(file_path):
+                        await message.answer(f"⚠️ **{sender_title}:** [فایل یافت نشد]\n")
+                        continue
+
+                    try:
+                        # آماده‌سازی فایل برای ارسال از روی دیسک
+                        file_to_send = FSInputFile(file_path)
+                        file_ext = os.path.splitext(file_path)[1].lower()
+
+                        if file_ext in ['.jpg', '.jpeg', '.png', '.webp']:
+                            await bot.send_photo(
+                                chat_id=message.chat.id,
+                                photo=file_to_send,
+                                caption=f"📷 تصویر ارسالی {sender_title}"
+                            )
+                        elif file_ext in ['.ogg', '.mp3', '.wav', '.m4a']:
+                            await bot.send_voice(
+                                chat_id=message.chat.id,
+                                voice=file_to_send,
+                                caption=f"🎙 ویس ارسالی {sender_title}"
+                            )
+                        else:
+                            # سایر فایل‌ها به صورت داکیومنت
+                            await bot.send_document(
+                                chat_id=message.chat.id,
+                                document=file_to_send,
+                                caption=f"📎 فایل ارسالی {sender_title}"
+                            )
+                    except Exception as e:
+                        logging.error(f"Error sending history file {file_path}: {e}")
+                        await message.answer(f"❌ خطا در نمایش فایل: {os.path.basename(file_path)}")
+
+    # نمایش پیام راهنما در انتها
+    info_text = (
+        "✅ پرونده شما در صف بررسی مشاوران قرار دارد.\n\n"
+        "💬 **گفتگو با مشاور**\n"
+        "شما می‌توانید در اینجا برای مشاور پیام بگذارید (متن، عکس یا ویس).\n"
+        "پاسخ‌های مشاور نیز همینجا نمایش داده می‌شود.\n\n"
+        "پس از پایان مشاوره، پیش‌فاکتور برای شما ارسال می‌گردد."
+    )
+    await message.answer(info_text, reply_markup=get_consultation_keyboard())
+
+    # تنظیم وضعیت روی حالت چت
+    await state.set_state(PatientConsultation.chatting)
 
 async def handle_awaiting_invoice_approval(message: Message, state: FSMContext, api_client: APIClient, patient_id: int):
     """
@@ -415,6 +538,157 @@ async def finish_registration(callback: CallbackQuery, state: FSMContext, bot: B
     await callback.message.edit_text(response_text, parse_mode='HTML')
 
     await state.clear()
+
+# =============================================================================
+# x. هندلرهای وضعیت: انتظار مشاوره (سیستم چت) - جدید
+# =============================================================================
+
+# این تابع را قبل از تابع process_consultation_text قرار دهید
+
+@patient_router.message(PatientConsultation.chatting, F.text == "🧾 اتمام مشاوره و درخواست فاکتور")
+async def request_invoice_handler(message: Message, state: FSMContext, api_client: APIClient):
+    """
+    وقتی بیمار دکمه کیبورد پایین صفحه را می‌زند.
+    """
+    data = await state.get_data()
+    patient_id = data.get("chat_patient_id")
+
+    if not patient_id:
+        # تلاش برای ریکاوری آیدی اگر در state نباشد
+        telegram_id = message.from_user.id
+        profile = await api_client.get_patient_details_by_telegram_id(telegram_id)
+        if profile:
+            patient_id = profile.get("patient_id")
+
+    if not patient_id:
+        await message.answer("⚠️ خطا در شناسایی پرونده.")
+        return
+
+    # ۱. ارسال پیام به مشاور که بداند بیمار کارش تمام شده
+    system_msg = "🛑 **بیمار درخواست صدور فاکتور داد.**"
+
+    success = await api_client.create_message(
+        patient_id=patient_id,
+        message_content=system_msg,
+        messages_sender=True,  # به عنوان پیام بیمار ثبت می‌شود
+        user_id=None
+    )
+
+    if success:
+        # ۲. حذف کیبورد برای اینکه کاربر بداند درخواستش ثبت شده
+        await message.answer(
+            "✅ درخواست شما برای مشاور ارسال شد.\n"
+            "⏳ لطفاً منتظر باشید تا مشاور فاکتور را صادر کند.\n\n"
+            "به محض صدور فاکتور، ربات به شما اطلاع می‌دهد.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await message.answer("❌ خطا در برقراری ارتباط با سرور.")
+
+
+# --- هندلر دریافت متن در چت ---
+@patient_router.message(PatientConsultation.chatting, F.text)
+async def process_consultation_text(message: Message, state: FSMContext, api_client: APIClient):
+    user_telegram_id = message.from_user.id
+
+    # ================== بخش جدید: بررسی وضعیت لحظه‌ای ==================
+    # ۱. وضعیت جدید بیمار را از API بگیرید
+    user_details = await api_client.get_user_details_by_telegram_id(user_telegram_id)
+
+    # اگر به هر دلیلی دیتا نیامد، ادامه نده
+    if not user_details:
+        return
+
+    current_status = user_details.get("patient_status")
+
+    # ۲. چک کنید آیا مشاور فاکتور صادر کرده است؟
+    # (مطمئن شوید مقدار استرینگ دقیقاً با دیتابیس شما یکی باشد، مثلا awaiting_invoice_approval)
+    if current_status == PatientStatus.AWAITING_INVOICE_APPROVAL.value:
+        # ۳. تغییر State بیمار
+        await state.clear()
+
+        # ۴. نمایش پیام به بیمار که فاکتور صادر شده
+        await message.answer(
+            "🛑 **توجه:** مشاور برای شما فاکتور صادر کرده است.\n"
+            "امکان ارسال پیام جدید وجود ندارد. لطفاً فاکتور را بررسی و پرداخت کنید.",
+            reply_markup=None  # حذف کیبورد قبلی اگر هست
+        )
+
+        # ۵. هدایت به تابع نمایش فاکتور (که باید جداگانه داشته باشید)
+        # فرض میکنیم تابعی به نام show_invoice_details دارید، یا مستقیماً اینجا صدا میزنید
+        await handle_awaiting_invoice_approval(message, state, api_client,patient_id=user_details.get("patient_id"))
+        return
+    # ===================================================================
+
+    if message.text.startswith("/"): return  # دستورات ربات را اجرا نکند
+
+    data = await state.get_data()
+    patient_id = data.get("chat_patient_id")
+
+    if not patient_id:
+        # اگر به هر دلیلی آیدی نبود، دوباره لود کن
+        await main_patient_handler(message, state, api_client, message.bot)
+        return
+
+    success = await api_client.create_message(
+        patient_id=patient_id,
+        message_content=message.text,
+        messages_sender=True,  # True = از طرف بیمار
+        user_id=None  # در پیام بیمار نیازی به user_id نیست
+    )
+
+    if success:
+        await message.reply("✔️ ارسال شد.")
+    else:
+        await message.reply("❌ خطا در ارسال پیام.")
+
+
+# --- هندلر دریافت مدیا (عکس/ویس) در چت ---
+@patient_router.message(PatientConsultation.chatting, F.photo | F.voice)
+async def process_consultation_media(message: Message, state: FSMContext, bot: Bot, api_client: APIClient):
+    data = await state.get_data()
+    patient_id = data.get("chat_patient_id")
+
+    if not patient_id:
+        await message.answer("خطا در شناسایی پرونده.")
+        return
+
+    msg = await message.answer("⏳ در حال آپلود فایل...")
+
+    try:
+        file_id = None
+        purpose = "chat_file"
+
+        if message.photo:
+            file_id = message.photo[-1].file_id
+            purpose = "chat_photo"
+        elif message.voice:
+            file_id = message.voice.file_id
+            purpose = "chat_voice"
+
+        # ذخیره فایل
+        telegram_id = message.from_user.id
+        saved_path = await save_telegram_file(bot, file_id, telegram_id, purpose=purpose)
+
+        if saved_path:
+            # ارسال به API
+            success = await api_client.create_message(
+                patient_id=patient_id,
+                message_content=f"ارسال {('عکس' if message.photo else 'ویس')}",
+                messages_sender=True,
+                attachments=[saved_path]  # ارسال لیست مسیر فایل
+            )
+
+            if success:
+                await msg.edit_text("✅ فایل برای مشاور ارسال شد.")
+            else:
+                await msg.edit_text("❌ خطا در ثبت فایل در سیستم.")
+        else:
+            await msg.edit_text("❌ خطا در دانلود فایل.")
+
+    except Exception as e:
+        logger.error(f"Chat media error: {e}", exc_info=True)
+        await msg.edit_text("خطای سیستمی.")
 
 
 # =============================================================================
@@ -775,21 +1049,9 @@ async def process_phone_number(message: Message, state: FSMContext):
         return
 
     await state.update_data(phone_number=phone)
-    await state.set_state(PatientShippingInfo.waiting_for_postal_code)
-    await message.answer("لطفاً کد پستی ۱۰ رقمی خود را وارد کنید:")
-
-
-@patient_router.message(PatientShippingInfo.waiting_for_postal_code)
-async def process_postal_code(message: Message, state: FSMContext):
-    # اعتبارسنجی کد پستی...
-    postal = message.text.strip()
-
-    if not postal.isdigit() or len(postal) != 10:
-        await message.answer("❌ کد پستی باید دقیقاً ۱۰ رقم عددی باشد.")
-        return
-    await state.update_data(postal_code=postal)
     await state.set_state(PatientShippingInfo.waiting_for_address)
     await message.answer("لطفاً آدرس دقیق پستی خود را وارد کنید:")
+
 
 
 @patient_router.message(PatientShippingInfo.waiting_for_address)
@@ -802,7 +1064,6 @@ async def process_address(message: Message, state: FSMContext,bot:Bot, api_clien
     shipping_details = {
         "national_id": data.get("national_id"),
         "phone_number": data.get("phone_number"),
-        "postal_code": data.get("postal_code"),
         "address": data.get("address")
     }
 

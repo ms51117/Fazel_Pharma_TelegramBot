@@ -6,6 +6,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup
 from typing import List, Dict, Any
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+
 
 # این نام را تغییر می‌دهیم تا واضح‌تر باشد
 def get_start_keyboard() -> InlineKeyboardMarkup:
@@ -57,7 +59,18 @@ def get_invoice_action_keyboard(order_id: int) -> InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
-
+def get_consultation_keyboard() -> ReplyKeyboardMarkup:
+    """
+    کیبورد ثابت پایین صفحه برای محیط چت.
+    شامل دکمه درخواست پایان مشاوره است.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🧾 اتمام مشاوره و درخواست فاکتور")]
+        ],
+        resize_keyboard=True, # سایز دکمه را متناسب با متن کوچک می‌کند
+        one_time_keyboard=False # کیبورد بعد از کلیک مخفی نشود (همیشه باشد)
+    )
 
 def get_interactive_invoice_keyboard(items: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
     """

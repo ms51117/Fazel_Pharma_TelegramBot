@@ -21,31 +21,29 @@ def create_payment_dates_keyboard(dates: list[str]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+# اصلاحیه کوچک در keyboards.py برای نمایش بهتر قیمت
 def create_pending_payments_keyboard(payments: list[dict]) -> InlineKeyboardMarkup:
-    """
-    یک کیبورد برای انتخاب پرداخت‌های در انتظار از لیست دریافتی ایجاد می‌کند.
-    """
     builder = InlineKeyboardBuilder()
     for payment in payments:
-        patient_name = payment.get("full_name", "نامشخص")
-        amount = payment.get("payment_value", 0)  # مقدار ممکن است رشته باشد
-        payment_id = payment.get("payment_list_id")
+        # تلاش برای پیدا کردن نام (اگر بک‌اند نفرستد، اینجا کاری نمی‌توان کرد جز نمایش پیش‌فرض)
+        patient_name = payment.get("full_name") or f"کاربر {payment.get('user_id')}"
 
-        # ==================== اصلاحیه اصلی اینجاست ====================
+        # اصلاح نمایش قیمت
+        raw_amount = payment.get("payment_value") or payment.get("amount")
         try:
-            # ابتدا به عدد صحیح تبدیل کرده، سپس با کاما فرمت‌بندی می‌کنیم
-            formatted_amount = f"{int(float(amount)):,} ریال"
-        except (ValueError, TypeError):
-            # اگر تبدیل ناموفق بود (مثلا مقدار None یا رشته غیرعددی بود)
-            formatted_amount = "مبلغ نامشخص"
+            if raw_amount:
+                formatted_amount = f"{int(float(raw_amount)):,} ریال"
+            else:
+                formatted_amount = "؟ ریال"
+        except:
+            formatted_amount = "Error"
 
-        button_text = f"{patient_name} - مبلغ: {formatted_amount}"
-        # =============================================================
+        payment_id = payment.get("payment_list_id")
+        button_text = f"{patient_name} | {formatted_amount}"
 
         builder.button(text=button_text, callback_data=f"casher_payment_{payment_id}")
 
     builder.adjust(1)
-    # اضافه کردن دکمه بازگشت به منوی تاریخ‌ها
     builder.row(InlineKeyboardButton(text="⬅️ بازگشت به تاریخ‌ها", callback_data="casher_back_to_dates"))
     return builder.as_markup()
 
