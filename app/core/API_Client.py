@@ -26,6 +26,9 @@ class APIClient:
         self._token: Optional[str] = None
         self._lock = asyncio.Lock()
 
+        self._content_cache: Dict[str, str] = {}
+
+
         # خواندن اطلاعات از settings
         self._username = settings.API_USERNAME
         self._password = settings.API_PASSWORD.get_secret_value()
@@ -586,61 +589,7 @@ class APIClient:
             logging.exception(f"An exception occurred while creating payment: {e}")
             return None
 
-    async def update_order_comprehensively(
-            self,
-            order_id: int,
-            items: List[Dict[str, Any]],
-            status: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        یک سفارش را به صورت جامع آپدیت می‌کند (جایگزینی آیتم‌ها و/یا تغییر وضعیت).
-        این متد با اندپوینت PATCH /order/{order_id} در بک‌اند هماهنگ است.
 
-        Args:
-            order_id (int): شناسه سفارش برای آپدیت.
-            items (List[Dict[str, Any]]): لیستی از دیکشنری‌های آیتم‌ها. هر دیکشنری
-                                         باید شامل 'drug_id' و 'qty' باشد.
-            status (Optional[str]): وضعیت جدید سفارش (مثلاً 'Created', 'Paid').
-
-        Returns:
-            Optional[Dict]: پاسخ موفقیت‌آمیز از API در صورت آپدیت، در غیر این صورت None.
-        """
-        # ساخت بخش order_items از payload
-        order_items_payload = [
-            {"drug_id": item["drug_id"], "qty": item["qty"]} for item in items
-        ]
-
-        # ساخت payload نهایی
-        payload = {"order_items": order_items_payload}
-
-        # اگر وضعیت جدیدی هم ارسال شده بود، به payload اضافه کن
-        if status:
-            payload["order_status"] = status
-
-        logging.info(f"Attempting to update order {order_id} with payload: {payload}")
-
-        # استفاده از متد عمومی _make_request برای ارسال درخواست
-        # شما باید متد _make_request را در کلاس خود داشته باشید یا مستقیماً از httpx استفاده کنید.
-        # در اینجا فرض بر وجود _make_request است.
-        try:
-            token = await self.login_check()
-            headers = {"Authorization": f"Bearer {token}"}
-            url = f"{self._base_url}/order/{order_id}"
-
-            response = await self._client.patch(url, headers=headers, json=payload)
-
-            response.raise_for_status()  # برای کدهای 4xx و 5xx خطا ایجاد می‌کند
-
-            updated_order = response.json()
-            logging.info(f"Successfully updated order {order_id}. Response: {updated_order}")
-            return updated_order
-
-        except httpx.HTTPStatusError as e:
-            logging.error(f"HTTP error updating order {order_id}: {e.response.status_code} - {e.response.text}")
-            return None
-        except Exception as e:
-            logging.error(f"Unexpected error updating order {order_id}: {e}", exc_info=True)
-            return None
 
     # -----------------------------------------------------------------------------
 
@@ -818,6 +767,64 @@ class APIClient:
         except Exception as e:
             logging.error(f"Error fetching user {user_id}: {e}")
             return None
+
+    # ---------------- BOT CONTENT MANAGEMENT (CMS) ----------------
+
+    async def get_bot_message(self, key: str, default: str = "") -> str:
+        """
+        متن پیام را بر اساس کلید (key) از سیستم دریافت می‌کند.
+
+        الگوریتم:
+        1. ابتدا کش (حافظه رم) بررسی می‌شود.
+        2. اگر نبود، به API درخواست می‌زند.
+        3. پاسخ API را در کش ذخیره می‌کند تا دفعات بعد سریع‌تر باشد.
+        """
+        # 1. بررسی کش
+        if key in self._content_cache:
+            return self._content_cache[key]
+
+        try:
+            # اطمینان از وجود توکن (هرچند روت ممکن است پابلیک باشد، ارسال توکن استانداردتر است)
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+            # آدرس اندپوینت جدیدی که ساختیم
+            url = f"{self._base_url}/bot-message/key/{key}"
+
+            # 2. درخواست به سرور
+            response = await self._client.get(url, headers=headers)
+
+            if response.status_code == 200:
+                data = response.json()
+                # طبق اسکیمای BotMessageRead، فیلد متن پیام message_text است
+                text = data.get("message_text")
+
+                if text:
+                    # 3. ذخیره در کش
+                    self._content_cache[key] = text
+                    return text
+                else:
+                    return default
+
+            elif response.status_code == 404:
+                logging.warning(f"CMS: Message key '{key}' not found in DB. Using default text.")
+                return default
+            else:
+                logging.error(f"CMS: Error fetching '{key}'. Status: {response.status_code}")
+                return default
+
+        except Exception as e:
+            logging.error(f"CMS: Unexpected error fetching '{key}': {e}")
+            return default
+
+    def clear_content_cache(self):
+        """
+        پاک کردن حافظه موقت پیام‌ها.
+        این متد زمانی کاربرد دارد که ادمین متنی را تغییر داده و می‌خواهد
+        ربات بدون ریستارت شدن، متن جدید را بگیرد.
+        """
+        self._content_cache.clear()
+        logging.info("CMS: Bot content cache cleared successfully.")
 
     async def close(self):
         """

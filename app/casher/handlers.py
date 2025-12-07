@@ -265,7 +265,7 @@ async def process_approve_payment(callback: CallbackQuery, state: FSMContext, ap
 
     if casher_profile:
         casher_db_id = casher_profile.get("user_id") or casher_profile.get("id") or 1
-        casher_name = f"{casher_profile.get('first_name', '')} {casher_profile.get('last_name', '')}"
+        casher_name = casher_profile.get('full_name', '')
 
     casher_db_id = int(casher_db_id)
 
@@ -303,7 +303,7 @@ async def process_approve_payment(callback: CallbackQuery, state: FSMContext, ap
             if consultant_id:
                 c_info = await api_client.get_user_details_by_id(consultant_id)
                 if c_info:
-                    consultant_name = f"{c_info.get('first_name', '')} {c_info.get('last_name', '')}"
+                    consultant_name = c_info.get('full_name', '')
 
             # پ) پردازش اقلام
             raw_items = order_data.get("order_list", [])
@@ -355,7 +355,7 @@ async def process_approve_payment(callback: CallbackQuery, state: FSMContext, ap
                 "buyer_info": {
                     "name": current_payment.get("full_name", "مهمان"),
                     "address": patient_details.get("address", "---") if patient_details else "---",
-                    "phone": patient_details.get("phone_number", str(patient_tg_id)) if patient_details else str(
+                    "phone": patient_details.get("mobile_number", str(patient_tg_id)) if patient_details else str(
                         patient_tg_id)
                 },
                 "consultant_name": consultant_name,
@@ -384,6 +384,29 @@ async def process_approve_payment(callback: CallbackQuery, state: FSMContext, ap
                     )
                 except Exception:
                     pass
+                try:
+                    # ساخت پیام جمع‌بندی
+                    how_to_use_text = "💊 **نحوه مصرف داروهای شما:**\n\n"
+
+                    for item in raw_items:
+                        drug_obj = item.get("drug", {})
+                        d_name = drug_obj.get("drug_pname") or "دارو نامشخص"
+                        how_use = drug_obj.get("drug_how_to_use")
+
+                        if how_use:
+                            how_to_use_text += f"• **{d_name}:**\n{how_use}\n\n"
+                        else:
+                            how_to_use_text += f"• {d_name}: (اطلاعات نحوه مصرف ثبت نشده است)\n\n"
+
+                    # ارسال به بیمار
+                    await bot.send_message(
+                        patient_tg_id,
+                        how_to_use_text,
+                        parse_mode="Markdown"
+                    )
+
+                except Exception as e:
+                    logger.error(f"Failed to send drug how-to-use instructions: {e}")
 
         except Exception as e:
             logging.error(f"Invoice generation error: {e}", exc_info=True)

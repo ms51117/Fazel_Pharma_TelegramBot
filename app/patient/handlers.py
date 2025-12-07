@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
+import copy  # برای کپی صحیح لیست حتما لازم است
 
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
@@ -15,6 +16,7 @@ from aiogram.filters import CommandStart, StateFilter # ### <-- ایمپورت �
 from aiogram.filters import StateFilter
 from aiogram.types import FSInputFile, Message
 from aiogram.fsm.context import FSMContext
+from aiogram.exceptions import TelegramBadRequest # حتما این را بالای فایل ایمپورت کنید
 
 # ایمپورت‌های پروژه شما
 from app.patient.states import PatientRegistration, PatientShippingInfo, PatientPaymentInfo, PatientConsultation
@@ -137,7 +139,7 @@ async def main_patient_handler(message: Message, state: FSMContext, api_client: 
 
     # وضعیت ۱: بیمار جدید یا پروفایل ناقص
     if not patient_profile or patient_profile.get("patient_status") == PatientStatus.AWAITING_PROFILE_COMPLETION.value:
-        return await handle_new_or_incomplete_profile(message, state)
+        return await handle_new_or_incomplete_profile(message, state,api_client)
 
     # وضعیت ۲: بیمار منتظر مشاوره است
     if patient_profile.get("patient_status") == PatientStatus.AWAITING_CONSULTATION.value:
@@ -169,15 +171,15 @@ async def main_patient_handler(message: Message, state: FSMContext, api_client: 
 # 2. توابع کمکی برای مدیریت هر وضعیت (Sub-Handlers)
 # =============================================================================
 
-async def handle_new_or_incomplete_profile(message: Message, state: FSMContext):
+async def handle_new_or_incomplete_profile(message: Message, state: FSMContext,api_client: APIClient):
     """اگر بیمار جدید است یا پروفایلش ناقص است، فرآیند ثبت‌نام را شروع می‌کند."""
     await state.set_state(PatientRegistration.waiting_for_full_name)
-    await message.answer("سلام وقت بخیر: \n"
-                         "حجم پیامها بیسار بالاست و ممکنه چند روز زمان ببره تا نوبت مشاوره شما برسه , پیشاپیش ممنون از صبوریتون \n"
-                         "\n"
-                         "اگر مشهد هستید و امکان مراجعه حضوری دارین عصر ها بین ساعت 17 تا 22 میتونید به داروخانه مراجعه کنید\n"
-                         "\n"
-                         "اگر میخاین از مشاوره انلاین ما استفاده کنید , لطفا سوالاتی که در ادامه ازتون پرسیده میشه با دقت جواب بدین تا بتونیم بهتر راهنماییتون کنیم ")
+    welcome_text = await api_client.get_bot_message(
+        key="welcome_start",
+        default="سلام! به ربات داروخانه خوش آمدید. (متن پیش‌فرض)"
+    )
+
+    await message.answer(welcome_text)
     await message.answer(
         "برای شروع، لطفاً نام و نام خانوادگی خود را وارد کنید:",
         reply_markup=ReplyKeyboardRemove()
@@ -593,7 +595,7 @@ async def process_consultation_text(message: Message, state: FSMContext, api_cli
 
     # ================== بخش جدید: بررسی وضعیت لحظه‌ای ==================
     # ۱. وضعیت جدید بیمار را از API بگیرید
-    user_details = await api_client.get_user_details_by_telegram_id(user_telegram_id)
+    user_details = await api_client.get_patient_details_by_telegram_id(user_telegram_id)
 
     # اگر به هر دلیلی دیتا نیامد، ادامه نده
     if not user_details:
@@ -925,20 +927,66 @@ async def toggle_invoice_item(callback: CallbackQuery, state: FSMContext):
         await callback.answer("یک خطای غیرمنتظره رخ داد.", show_alert=True)
 
 
+
+
 @patient_router.callback_query(PatientRegistration.editing_invoice, F.data == "reset_invoice_edit")
 async def reset_invoice_edit(callback: CallbackQuery, state: FSMContext):
     """
-    تغییرات اعمال شده در فاکتور را به حالت اولیه بازنشانی می‌کند.
+    هندلر دکمه بازنشانی: وضعیت فعلی را دور می‌ریزد و نسخه اولیه (initial_cart) را جایگزین می‌کند.
     """
     data = await state.get_data()
+
+    # لیست فعلی که کاربر تغییر داده
+    current_cart = data.get("current_cart", [])
+    # لیست اولیه که در لحظه ورود به ویرایش ذخیره کردیم (نسخه پشتیبان)
     initial_cart = data.get("initial_cart", [])
 
-    # کپی کردن سبد اولیه برای جلوگیری از تغییرات ناخواسته در آینده
-    await state.update_data(current_cart=initial_cart.copy())
+    # 1. بررسی: آیا واقعاً تغییری داده شده؟
+    # منطق: اگر حتی یک آیتم در لیست "فعلی" غیرفعال (selected=False) باشد، یعنی تغییر کرده.
+    has_changes = False
+    for item in current_cart:
+        if item.get("selected") is False:
+            has_changes = True
+            break
 
-    new_keyboard = get_interactive_invoice_keyboard(initial_cart)
-    await callback.message.edit_reply_markup(reply_markup=new_keyboard)
-    await callback.answer("تغییرات بازنشانی شد.")
+    if not has_changes:
+        # اگر همه چیز True است، یعنی لیست کامل است و نیازی به ریست نیست
+        await callback.answer("لیست هم‌اکنون کامل است.", show_alert=False)
+        return
+
+    # 2. عملیات بازنشانی
+    # لیست فعلی را با یک کپی تازه از لیست اولیه جایگزین می‌کنیم
+    restored_cart = copy.deepcopy(initial_cart)
+
+    # ذخیره در State
+    await state.update_data(current_cart=restored_cart)
+
+    # 3. ساخت کیبورد و متن جدید
+    new_keyboard = get_interactive_invoice_keyboard(restored_cart)
+
+    # محاسبه مجدد قیمت کل (چون همه آیتم‌ها برگشتند)
+    total_price = sum(i['qty'] * i['price'] for i in restored_cart)
+
+    updated_text = (
+        "📄 **ویرایش فاکتور**\n\n"
+        "برای حذف یک دارو از سفارش، روی آن کلیک کنید (علامت ✅ به ☑️ تغییر می‌کند).\n\n"
+        "پس از اتمام تغییرات، دکمه '✅ تایید نهایی ویرایش' را بزنید.\n\n"
+        f"💰 **مبلغ نهایی:** {total_price:,.0f} تومان"
+    )
+
+    try:
+        await callback.message.edit_text(
+            text=updated_text,
+            reply_markup=new_keyboard,
+            parse_mode="Markdown"
+        )
+    except TelegramBadRequest:
+        # اگر به هر دلیلی تلگرام تشخیص داد پیام عوض نشده، ارور را نادیده بگیر
+        pass
+    except Exception as e:
+        print(f"Error in reset handler: {e}")
+
+    await callback.answer("لیست به حالت اولیه بازگشت 🔄")
 
 
 @patient_router.callback_query(PatientRegistration.editing_invoice, F.data == "confirm_invoice_edit")
@@ -972,9 +1020,9 @@ async def confirm_invoice_edit(callback: CallbackQuery, state: FSMContext, api_c
 
         # فراخوانی متد جدید API Client
         # در این مرحله وضعیت سفارش را تغییر نمی‌دهیم، پس پارامتر status را ارسال نمی‌کنیم.
-        update_result = await api_client.update_order_comprehensively(
+        update_result = await api_client.update_order(
             order_id=order_id,
-            items=final_items
+            order_items=final_items
         )
 
         if update_result:
@@ -1063,7 +1111,7 @@ async def process_address(message: Message, state: FSMContext,bot:Bot, api_clien
 
     shipping_details = {
         "national_id": data.get("national_id"),
-        "phone_number": data.get("phone_number"),
+        "mobile_number": data.get("phone_number"),
         "address": data.get("address")
     }
 

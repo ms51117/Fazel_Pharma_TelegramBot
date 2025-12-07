@@ -702,7 +702,10 @@ async def handle_final_submit_order(callback: CallbackQuery, state: FSMContext, 
                 chat_id=patient_telegram_id,
                 text=(
                     "✅ نسخه شما توسط پزشک تجویز شد.\n"
-                    "لطفاً جهت مشاهده فاکتور و تایید آن، هم‌اکنون وارد ربات شوید."
+                    "لطفاً جهت مشاهده فاکتور و تایید آن، روی لینک زیر کلیک کنید.\n "
+                    "/Order"
+
+
                 )
             )
         except:
