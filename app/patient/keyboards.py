@@ -129,3 +129,13 @@ def get_shipping_info_confirmation_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="✏️ اصلاح اطلاعات", callback_data="edit_shipping_info")
     )
     return builder.as_markup()
+
+
+def get_package_type_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+
+    builder.button(text="💎 پکیج پریمیوم (VIP)", callback_data="package_PREMIUM")
+    builder.button(text="💰 پکیج اقتصادی (مقرون به صرفه)", callback_data="package_ECONOMIC")
+
+    builder.adjust(1)
+    return builder.as_markup()

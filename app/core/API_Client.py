@@ -383,7 +383,7 @@ class APIClient:
             return False
 
     # ---------------------------------------------------------------------------------------------------------
-    async def create_order(self, patient_id: int, user_id: int, drug_ids: list[int]) -> dict:
+    async def create_order(self, patient_id: int, user_id: int, drug_items: list[dict]) -> dict:
         """
         Calls the backend API to create a new order with its items.
         """
@@ -403,7 +403,7 @@ class APIClient:
             payload = {
                 "patient_id": patient_id,
                 "user_id": user_id,
-                "drug_ids": drug_ids
+                "items": drug_items  # نام فیلد در بک‌اند items شد (قبلاً drug_ids بود)
             }
 
             logging.info(f"Sending request to create order with payload: {payload}")

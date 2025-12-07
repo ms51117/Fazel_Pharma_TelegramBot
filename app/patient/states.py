@@ -18,6 +18,8 @@ class PatientRegistration(StatesGroup):
 
     waiting_for_photos = State()         # منتظر دریافت عکس‌ها
     confirm_photo_upload = State()
+    waiting_for_package_type = State()  # <--- این خط جدید اضافه شد
+
     waiting_for_edit_request = State()  # این را می‌توانیم حذف کنیم یا تغییر نام دهیم
     editing_invoice = State()
 

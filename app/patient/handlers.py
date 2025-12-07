@@ -24,7 +24,8 @@ from app.patient.keyboards import (
     get_gender_keyboard,
     get_photo_confirmation_keyboard,
     get_interactive_invoice_keyboard,
-    get_shipping_info_confirmation_keyboard, get_invoice_action_keyboard, get_consultation_keyboard
+    get_shipping_info_confirmation_keyboard, get_invoice_action_keyboard, get_consultation_keyboard,
+    get_package_type_keyboard
 )
 from app.core.API_Client import APIClient
 from app.core.enums import PatientStatus, OrderStatusEnum
@@ -402,12 +403,41 @@ async def process_height(message: Message, state: FSMContext):
         await message.answer("لطفاً قد را فقط به صورت عدد (سانتی‌متر) وارد کنید.")
         return
     await state.update_data(height=int(message.text))
+    await state.set_state(PatientRegistration.waiting_for_package_type)
+
+    text = (
+        "اطلاعات فیزیکی شما ثبت شد. ✅\n\n"
+        "لطفاً **نوع پکیج درمانی** خود را انتخاب کنید:\n\n"
+        "💎 **پکیج پریمیوم (VIP):**\n"
+        "• استفاده از بهترین برندهای دارویی (خارجی/تخصصی)\n"
+        "• اولویت بالاتر در نوبت‌دهی\n\n"
+        "💰 **پکیج اقتصادی:**\n"
+        "• استفاده از داروهای استاندارد و باکیفیت\n"
+        "• تعرفه مقرون‌به‌صرفه"
+    )
+
+    # ایمپورت کردن تابع کیبورد فراموش نشود
+    # from app.patient.keyboards import get_package_type_keyboard
+    await message.answer(text, reply_markup=get_package_type_keyboard())
+
+
+@patient_router.callback_query(PatientRegistration.waiting_for_package_type, F.data.startswith("package_"))
+async def process_package_selection(callback: CallbackQuery, state: FSMContext):
+    # دریافت انتخاب کاربر (ECONOMIC یا PREMIUM)
+    package_type = callback.data.split("_")[1]
+
+    # ذخیره در state
+    await state.update_data(package_type=package_type)
+
+    # تعیین وضعیت بعدی: توضیحات بیماری
     await state.set_state(PatientRegistration.waiting_for_disease_description)
-    await message.answer(
-        "اطلاعات اولیه شما ثبت شد.\n\nحالا لطفاً توضیحات کاملی در مورد بیماری، علائم و داروهای مورد نیاز خود را در یک پیام وارد کنید.")
 
+    pkg_name = "پریمیوم (VIP)" if package_type == 'PREMIUM' else "اقتصادی"
 
-
+    await callback.message.edit_text(
+        f"✅ پکیج **{pkg_name}** برای شما انتخاب شد.\n\n"
+        "حالا لطفاً توضیحات کاملی در مورد بیماری، علائم و داروهای مورد نیاز خود را در یک پیام بنویسید."
+    )
 
 
 # --- دریافت توضیحات بیماری و درخواست عکس ---
@@ -506,7 +536,9 @@ async def finish_registration(callback: CallbackQuery, state: FSMContext, bot: B
         "telegram_id": str(telegram_id),
         "specific_diseases": user_data.get("disease_description"),
         "photo_paths": saved_photo_paths,
-        "special_conditions" : user_data.get("special_conditions")
+        "special_conditions" : user_data.get("special_conditions"),
+        "package_type": user_data.get("package_type")  # <--- این خط را حتما اضافه کنید
+
     }
 
     # پس از ارسال به API و ایجاد پروفایل:

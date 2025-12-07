@@ -4,12 +4,9 @@ import logging
 import os
 from datetime import datetime
 
-from aiogram.types import FSInputFile
 
 
 from aiogram import Router, F
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InputFile, InputMediaPhoto, ReplyKeyboardRemove
 from aiogram.types import Message, CallbackQuery, FSInputFile # <--- این را اضافه کنید
 from aiogram.fsm.context import FSMContext
@@ -17,7 +14,6 @@ from decimal import Decimal # <--- این خط را اضافه کنید
 
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.state import default_state
-from aiogram import Bot
 
 import os
 import logging
@@ -279,9 +275,10 @@ async def handle_start_prescription_from_chat(message: Message, state: FSMContex
 
     # Resetting state data clearly
     await state.update_data(
-        selected_drugs=set(),      # فقط آیدی‌ها ذخیره می‌شوند
-        drug_cache={},             # دیکشنری برای ذخیره نام و قیمت داروها (ID -> Data)
-        current_disease_types=disease_types # برای دکمه بازگشت لازم داریم
+        # تغییر مهم: جایگزینی set با dict برای نگهداری تعداد
+        prescription_cart={},      # دیکشنری خالی برای {drug_id: quantity}
+        drug_cache={},             # دیکشنری برای ذخیره نام و قیمت داروها
+        current_disease_types=disease_types
     )
     await state.set_state(ConsultantFlow.choosing_disease_type)
 
@@ -529,70 +526,119 @@ async def handle_consultant_chat_message(message: Message, state: FSMContext, ap
 async def process_disease_type_choice(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
     disease_type_id = int(callback.data.split("_")[2])
 
-    await callback.message.edit_text(f"در حال دریافت لیست داروها...")
+    # پیام انتظار موقت
+    try:
+        await callback.message.edit_text(f"در حال دریافت لیست داروها...")
+    except:
+        pass
 
     drugs = await api_client.get_drugs_by_disease_type(disease_type_id)
+
     if not drugs:
         await callback.message.edit_text("هیچ دارویی برای این دسته‌بندی یافت نشد.")
-        # برگشت به لیست دسته‌ها
+        # منطق برگشت به عقب (اختیاری)
         data = await state.get_data()
         keyboard = create_disease_types_keyboard(data.get("current_disease_types", []))
         await callback.message.edit_text("لطفاً دسته‌بندی دیگری انتخاب کنید:", reply_markup=keyboard)
         return
 
-    # 1. آپدیت کردن کش داروها (مهم)
+    # 1. دریافت داده‌های قبلی از State
     data = await state.get_data()
     drug_cache = data.get("drug_cache", {})
-    selected_drugs = data.get("selected_drugs", set())
 
+    # --- تغییر ۱: استفاده از prescription_cart (دیکشنری) بجای selected_drugs (ست) ---
+    # اگر قبلا چیزی انتخاب کرده باشیم (از دسته های دیگر)، اینجا حفظ می‌شود
+    prescription_cart = data.get("prescription_cart", {})
+
+    # آپدیت کش داروها (برای اینکه بعدا اسم و قیمت رو داشته باشیم)
     for drug in drugs:
         drug_cache[drug['drugs_id']] = {
             'name': drug['drug_pname'],
             'price': drug.get('price', 0)
         }
 
-    # ذخیره مجدد در State
+    # ذخیره در State
     await state.update_data(
-        available_drugs_in_current_view=drugs,  # فقط داروهای همین دسته برای نمایش
-        drug_cache=drug_cache
+        # این لیست رو لازم داریم تا وقتی دکمه + یا - زده شد، کیبورد رو دوباره بسازیم
+        current_drugs_list=drugs,
+        drug_cache=drug_cache,
+        # (اختیاری) اگر cart هنوز در استیت نبود، مقدار اولیه را ست میکنیم
+        prescription_cart=prescription_cart
     )
 
-    # 2. نمایش کیبورد
-    keyboard = create_drugs_keyboard(drugs, selected_drugs)
+    # 2. ساخت کیبورد جدید (با تعداد)
+    # --- تغییر ۲: پاس دادن دیکشنری تعداد به کیبورد ---
+    keyboard = create_drugs_keyboard(drugs, prescription_cart)
+
     await callback.message.edit_text(
         "داروهای مورد نظر را انتخاب کنید.\n"
-        "می‌توانید پس از انتخاب، دکمه 'بازگشت به دسته‌بندی' را بزنید و از دسته‌های دیگر هم دارو بردارید.",
+        "🔹 **روی نام دارو بزنید** تا به سبد اضافه شود (افزایش تعداد).\n"
+        "🔸 **دکمه ➖** را بزنید تا از تعداد کم شود.",
         reply_markup=keyboard
     )
 
     await state.set_state(ConsultantFlow.choosing_drugs)
     await callback.answer()
 
-
 # --- مرحله ۶: انتخاب/حذف یک دارو (منطق تیک زدن) ---
-@consultant_router.callback_query(ConsultantFlow.choosing_drugs, F.data.startswith("drug_select_"))
-async def process_drug_selection(callback: CallbackQuery, state: FSMContext):
+# --- هندلر افزایش تعداد دارو (کلیک روی نام دارو) ---
+@consultant_router.callback_query(F.data.startswith("drug_add_"))
+async def on_drug_increase(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
+    # 1. استخراج آیدی دارو
+    drug_id = int(callback.data.split("_")[2])
+
+    # 2. دریافت وضعیت فعلی سبد خرید
+    data = await state.get_data()
+    # cart_counts ساختاری مثل {drug_id: qty} دارد
+    cart_counts = data.get("prescription_cart", {})
+
+    # 3. افزایش تعداد
+    current_qty = cart_counts.get(drug_id, 0)
+    cart_counts[drug_id] = current_qty + 1
+
+    # 4. ذخیره مجدد در State
+    await state.update_data(prescription_cart=cart_counts)
+
+    # 5. آپدیت کردن کیبورد (بدون تغییر متن پیام، فقط کیبورد عوض شود تا سرعت بالا برود)
+    # برای ساخت کیبورد، نیاز به لیست داروها داریم.
+    # بهینه این است که لیست داروها را هم در state کش کرده باشید (current_drugs_list)
+    # اگر ندارید، باید دوباره از API بگیرید (که کند است). فرض می‌کنیم در state هست.
+    current_drugs = data.get("current_drugs_list", [])
+
+    new_keyboard = create_drugs_keyboard(current_drugs, cart_counts)
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=new_keyboard)
+    except Exception:
+        logging.error("فثسف")
+        pass  # اگر کیبورد تغییری نکرده بود ارور نده
+
+    await callback.answer(f"تعداد: {cart_counts[drug_id]}")
+
+
+# --- هندلر کاهش تعداد دارو (کلیک روی ➖) ---
+@consultant_router.callback_query(F.data.startswith("drug_dec_"))
+async def on_drug_decrease(callback: CallbackQuery, state: FSMContext):
     drug_id = int(callback.data.split("_")[2])
 
     data = await state.get_data()
-    selected_drugs = set(data.get("selected_drugs", []))  # تبدیل لیست به set
-    available_drugs_view = data.get("available_drugs_in_current_view", [])
+    cart_counts = data.get("prescription_cart", {})
+    current_drugs = data.get("current_drugs_list", [])
 
-    # Toggle Logic
-    if drug_id in selected_drugs:
-        selected_drugs.remove(drug_id)
-    else:
-        selected_drugs.add(drug_id)
+    if drug_id in cart_counts:
+        if cart_counts[drug_id] > 1:
+            cart_counts[drug_id] -= 1
+        else:
+            # اگر ۱ بود و کم کرد، کلاً از دیکشنری حذف شود (تعداد ۰)
+            del cart_counts[drug_id]
 
-    # ذخیره به صورت لیست (چون JSON ست را ساپورت نمی‌کند، اما Aiogram هندل می‌کند معمولا. بهتر است set بماند در مموری)
-    await state.update_data(selected_drugs=selected_drugs)
+        await state.update_data(prescription_cart=cart_counts)
 
-    # آپدیت کیبورد
-    new_keyboard = create_drugs_keyboard(available_drugs_view, selected_drugs)
-
-    # جلوگیری از خطای تلگرام اگر تغییری نبود
-    if callback.message.reply_markup != new_keyboard:
-        await callback.message.edit_reply_markup(reply_markup=new_keyboard)
+        new_keyboard = create_drugs_keyboard(current_drugs, cart_counts)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=new_keyboard)
+        except Exception:
+            pass
 
     await callback.answer()
 
@@ -600,62 +646,76 @@ async def process_drug_selection(callback: CallbackQuery, state: FSMContext):
 @consultant_router.callback_query(ConsultantFlow.choosing_drugs, F.data == "back_to_categories")
 async def handle_back_to_categories(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
     """بازگشت به لیست دسته‌بندی‌ها برای انتخاب داروی بیشتر"""
-    # لیست دسته‌ها را دوباره نگیریم، از کش state استفاده کنیم یا دوباره بگیریم
-    # اینجا فرض می‌کنیم قبلا در current_disease_types ذخیره کردیم (در هندلر شروع)
-    # اگر نکرده بودیم، دوباره کال می‌زنیم:
-    disease_types = await api_client.get_all_disease_types()
+
+    data = await state.get_data()
+
+    # 1. محاسبه تعداد اقلام انتخاب شده (بر اساس ساختار جدید)
+    prescription_cart = data.get("prescription_cart", {})
+
+    # استفاده از sum برای محاسبه مجموع تعداد (مثلاً ۲ تا استامینوفن + ۱ بروفن = ۳ قلم)
+    selected_count = sum(prescription_cart.values())
+
+    # 2. دریافت لیست دسته‌ها (ترجیحاً از کش برای سرعت بیشتر)
+    disease_types = data.get("current_disease_types")
+    if not disease_types:
+        # اگر در کش نبود، از API می‌گیریم
+        disease_types = await api_client.get_all_disease_types()
 
     keyboard = create_disease_types_keyboard(disease_types)
 
-    data = await state.get_data()
-    selected_count = len(data.get("selected_drugs", []))
-
     await callback.message.edit_text(
-        f"تا الان {selected_count} دارو انتخاب کرده‌اید.\n"
+        f"تا الان {selected_count} قلم دارو در سبد دارید.\n"
         "برای افزودن داروهای بیشتر، یک دسته‌بندی دیگر انتخاب کنید:",
         reply_markup=keyboard
     )
+
     await state.set_state(ConsultantFlow.choosing_disease_type)
     await callback.answer()
-
-
 
 
 @consultant_router.callback_query(ConsultantFlow.choosing_drugs, F.data == "review_prescription")
 async def handle_review_prescription(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    selected_ids = data.get("selected_drugs", set())
-    drug_cache = data.get("drug_cache", {})  # این دیکشنری شامل نام و قیمت تمام داروهای لود شده است
 
-    if not selected_ids:
+    # تغییر ۱: دریافت دیکشنری سبد خرید (شامل آیدی و تعداد)
+    prescription_cart = data.get("prescription_cart", {})
+    drug_cache = data.get("drug_cache", {})
+
+    if not prescription_cart:
         await callback.answer("هیچ دارویی انتخاب نشده است!", show_alert=True)
         return
 
-    # ساخت متن پیش‌فاکتور
     text = "📄 **پیش‌نمایش نسخه تجویزی:**\n\n"
-    total_price = 0
+    total_final_price = 0
 
     idx = 1
-    for d_id in selected_ids:
+    # تغییر ۲: حلقه روی دیکشنری برای دسترسی به d_id و qty
+    for d_id, qty in prescription_cart.items():
         details = drug_cache.get(d_id)
-        # نکته: اگر دارویی در کش نباشد (که بعید است) هندل می‌کنیم
+
         if details:
             name = details['name']
-            price = float(details['price'])
-            total_price += price
-            text += f"{idx}. {name} - {int(price):,} R\n"
-            idx += 1
+            try:
+                unit_price = float(details['price'])
+            except (ValueError, TypeError):
+                unit_price = 0
+
+            # تغییر ۳: محاسبه قیمت کل ردیف (قیمت واحد × تعداد)
+            line_total_price = unit_price * qty
+            total_final_price += line_total_price
+
+            # نمایش به صورت: 1. نام دارو (xتعداد) : قیمت کل ردیف
+            text += f"{idx}. {name} (x{qty}) : {int(line_total_price):,} R\n"
         else:
-            text += f"{idx}. داروی کد {d_id} (اطلاعات لود نشد)\n"
+            text += f"{idx}. داروی کد {d_id} (x{qty}) - (اطلاعات لود نشد)\n"
+
+        idx += 1
 
     text += "\n------------------------\n"
-    text += f"💰 **جمع کل: {int(total_price):,} ریال**\n\n"
+    text += f"💰 **جمع کل نهایی: {int(total_final_price):,} ریال**\n\n"
     text += "آیا این لیست مورد تایید است؟"
 
     await callback.message.edit_text(text, reply_markup=create_prescription_review_keyboard(), parse_mode="Markdown")
-    # اینجا state عوض نمیشود یا میتوانید یک state جدید Review بگذارید
-    # اما چون دکمه "ویرایش" داریم که برمیگردد به دسته ها، همین state اوکی است
-    # یا state را به ConsultantFlow.reviewing_order تغییر دهید اگر میخواهید دقیق باشد
     await callback.answer()
 
 
@@ -666,11 +726,17 @@ async def handle_final_submit_order(callback: CallbackQuery, state: FSMContext, 
     await callback.answer("در حال ثبت نهایی...", show_alert=False)
 
     data = await state.get_data()
-    selected_drugs_ids = data.get('selected_drugs')
-    patient_telegram_id = data.get('patient_telegram_id')
-    patient_full_name = data.get('full_name', 'بیمار')
+    # تغییر ۱: دریافت سبد خرید (تعداد داروها)
+    prescription_cart = data.get('prescription_cart', {})
 
-    # --- کد مربوط به شناسایی مشاور و بیمار (مشابه کد خودتان) ---
+    patient_telegram_id = data.get('patient_telegram_id')
+    # patient_full_name = data.get('full_name', 'بیمار') # (اگر نیاز بود آنکامنت کنید)
+
+    if not prescription_cart:
+        await callback.answer("خطا: سبد دارویی خالی است.", show_alert=True)
+        return
+
+    # --- دریافت اطلاعات مشاور و بیمار ---
     consultant_telegram_id = callback.from_user.id
     consultant_details = await api_client.get_user_details_by_telegram_id(consultant_telegram_id)
     user_id = int(consultant_details['user_id'])
@@ -680,12 +746,20 @@ async def handle_final_submit_order(callback: CallbackQuery, state: FSMContext, 
     # ---------------------------------------------------------
 
     try:
-        # 1. ثبت سفارش
-        drug_ids_list = list(selected_drugs_ids)
+        # تغییر ۲: تبدیل دیکشنری به فرمت مورد نیاز API (لیستی از دیکشنری‌ها شامل آیدی و تعداد)
+        # فرمت خروجی: [{"drug_id": 123, "qty": 2}, {"drug_id": 456, "qty": 1}]
+        order_items = []
+        for d_id, qty in prescription_cart.items():
+            order_items.append({
+                "drug_id": d_id,
+                "qty": qty
+            })
+
+        # ارسال لیست جدید به API
         new_order = await api_client.create_order(
             patient_id=patient_id,
             user_id=user_id,
-            drug_ids=drug_ids_list
+            drug_items=order_items  # اینجا لیست جدید حاوی تعداد ارسال می‌شود
         )
 
         if not new_order or 'order_id' not in new_order:
@@ -702,14 +776,12 @@ async def handle_final_submit_order(callback: CallbackQuery, state: FSMContext, 
                 chat_id=patient_telegram_id,
                 text=(
                     "✅ نسخه شما توسط پزشک تجویز شد.\n"
-                    "لطفاً جهت مشاهده فاکتور و تایید آن، روی لینک زیر کلیک کنید.\n "
+                    "لطفاً جهت مشاهده فاکتور و تایید آن، روی لینک زیر کلیک کنید.\n"
                     "/Order"
-
-
                 )
             )
-        except:
-            pass
+        except Exception as e:
+            logging.warning(f"Failed to send notification to patient: {e}")
 
         # 4. پایان کار
         await callback.message.edit_text(
@@ -726,15 +798,17 @@ async def handle_final_submit_order(callback: CallbackQuery, state: FSMContext, 
 
 # فعلا فقط اطلاعات را نمایش می‌دهیم تا از صحت عملکرد مطمئن شویم.
 @consultant_router.callback_query(ConsultantFlow.choosing_drugs, F.data == "confirm_drugs")
-async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_client: APIClient , bot : Bot):  # <--- user_id مشاور از میدل‌ور اضافه شد
+async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_client: APIClient, bot: Bot):
     await callback.answer("در حال ثبت تجویز...", show_alert=False)
 
     data = await state.get_data()
-    selected_drugs_ids = data.get('selected_drugs')
-    patient_telegram_id = data.get('patient_telegram_id')  # <--- نام state را از مرحله ۳ چک کنید (selected_patient_id)
-    patient_full_name = data.get('full_name', 'بیمار')  # <--- نام بیمار را هم از state می‌خوانیم
-    consultant_telegram_id = callback.from_user.id
+    # تغییر ۱: دریافت سبد خرید (شامل تعداد) و کش اطلاعات داروها (نام و قیمت)
+    prescription_cart = data.get('prescription_cart', {})
+    drug_cache = data.get('drug_cache', {})
 
+    patient_telegram_id = data.get('patient_telegram_id')
+    patient_full_name = data.get('full_name', 'بیمار')
+    consultant_telegram_id = callback.from_user.id
 
     # -----------------------------------------
     consultant_details = await api_client.get_user_details_by_telegram_id(consultant_telegram_id)
@@ -744,7 +818,6 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
     else:
         user_id = int(consultant_details['user_id'])
 
-    # گرفتن اطلاعات کامل بیمار با استفاده از متد جدید
     patient_details = await api_client.get_patient_details_by_telegram_id(patient_telegram_id)
     if not patient_details:
         await callback.message.answer(f"خطا: اطلاعات بیمار با شناسه تلگرام {patient_telegram_id} در سیستم یافت نشد.")
@@ -753,9 +826,8 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
         patient_id = int(patient_details['patient_id'])
     # -------------------------------------------
 
-
-    # ۱. اعتبارسنجی داده‌های موجود در state
-    if not selected_drugs_ids:
+    # ۱. اعتبارسنجی
+    if not prescription_cart:
         await callback.answer("خطا: هیچ دارویی انتخاب نشده است!", show_alert=True)
         return
 
@@ -768,14 +840,20 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
         return
 
     try:
-        # ۲. فراخوانی API برای ساخت سفارش
-        # تبدیل set به list چون JSON از set پشتیبانی نمی‌کند
-        drug_ids_list = list(selected_drugs_ids)
+        # ۲. آماده‌سازی داده‌ها برای API
+        # تبدیل دیکشنری به لیست آبجکت‌ها شامل تعداد
+        order_items = []
+        for d_id, qty in prescription_cart.items():
+            order_items.append({
+                "drug_id": int(d_id),
+                "qty": int(qty)
+            })
 
+        # فراخوانی API با ساختار جدید
         new_order = await api_client.create_order(
             patient_id=patient_id,
             user_id=user_id,
-            drug_ids=drug_ids_list
+            drug_items=order_items  # ارسال لیست دیکشنری‌ها
         )
 
         if not new_order or 'order_id' not in new_order:
@@ -783,24 +861,34 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
 
         order_id = new_order.get('order_id')
 
-        if not (await api_client.update_patient_status(patient_telegram_id,PatientStatus.AWAITING_INVOICE_APPROVAL)):
+        if not (await api_client.update_patient_status(patient_telegram_id, PatientStatus.AWAITING_INVOICE_APPROVAL)):
             raise ValueError("خطا در تغییر وضعیت.")
 
-
-        # ۳. ساخت پیام موفقیت‌آمیز برای نمایش به مشاور (شبیه فاکتور)
-        available_drugs = data.get('available_drugs', [])
-        selected_drugs_details = [
-            drug for drug in available_drugs if drug['drugs_id'] in selected_drugs_ids
-        ]
-
-        total_price = sum(Decimal(d['price']) for d in selected_drugs_details)
-
-        # ساخت متن لیست داروها
+        # ۳. ساخت پیام موفقیت‌آمیز (فاکتور)
         prescription_text = ""
-        for i, drug in enumerate(selected_drugs_details, 1):
-            # تبدیل قیمت به عدد صحیح و فرمت با کاما
-            price_formatted = f"{int(Decimal(drug['price'])):,}"
-            prescription_text += f"{i}. {drug['drug_pname']} - {price_formatted} ریال\n"
+        total_price = Decimal(0)
+
+        # محاسبه قیمت و ساخت متن با استفاده از drug_cache (چون available_drugs ممکنه فقط مال دسته آخر باشه)
+        idx = 1
+        for d_id, qty in prescription_cart.items():
+            details = drug_cache.get(d_id)
+            if details:
+                name = details['name']
+                try:
+                    unit_price = Decimal(details['price'])
+                except:
+                    unit_price = Decimal(0)
+
+                # محاسبه قیمت کل ردیف (قیمت × تعداد)
+                line_total = unit_price * qty
+                total_price += line_total
+
+                price_formatted = f"{int(line_total):,}"
+                # نمایش: 1. نام دارو (تعداد) - قیمت کل
+                prescription_text += f"{idx}. {name} (x{qty}) - {price_formatted} ریال\n"
+            else:
+                prescription_text += f"{idx}. کد {d_id} (x{qty}) - ؟؟؟ ریال\n"
+            idx += 1
 
         total_price_formatted = f"{int(total_price):,}"
 
@@ -825,15 +913,12 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
                         "لطفاً فاکتور داروهای پیشنهادی خود را در همین ربات بررسی و تأیید کنید 🙏"
                     )
                 )
-            else:
-                logging.warning("Patient telegram ID not found in FSM data; cannot send consultation notification.")
         except Exception as e:
             logging.error(f"Failed to send consultation-done message to patient: {e}")
 
         # ۴. پایان فلو و پاک کردن state
-        await callback.message.edit_text(success_message, parse_mode="Markdown",reply_markup=get_next_patient_keyboard())
-
-
+        await callback.message.edit_text(success_message, parse_mode="Markdown",
+                                         reply_markup=get_next_patient_keyboard())
         await state.clear()
 
     except Exception as e:
@@ -841,7 +926,7 @@ async def handle_confirm_drugs(callback: CallbackQuery, state: FSMContext, api_c
         await callback.message.edit_text(
             "❌ **خطا در ثبت تجویز!**\n\n"
             "مشکلی در ارتباط با سرور پیش آمده یا داده‌های ارسالی نامعتبر است. "
-            "لطفاً لحظاتی بعد دوباره تلاش کنید یا با پشتیبانی تماس بگیرید."
+            "لطفاً لحظاتی بعد دوباره تلاش کنید."
         )
         await state.clear()
 

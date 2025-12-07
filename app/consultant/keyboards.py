@@ -134,49 +134,57 @@ def get_consultant_chat_keyboard() -> ReplyKeyboardMarkup:
 # ---------------------------------------------------
 
 
-def create_drugs_keyboard(drugs_list, selected_drugs_ids=None):
+def create_drugs_keyboard(drugs_list: list, cart_counts: dict = None) -> InlineKeyboardMarkup:
     """
-    drugs_list: لیست تمام داروهای موجود در دسته فعلی
-    selected_drugs_ids: مجموعه‌ای (Set) از آیدی داروهایی که تا الان انتخاب شده‌اند
+    drugs_list: لیست دیکشنری‌های دارو که از API آمده.
+    cart_counts: دیکشنری شامل تعداد انتخاب شده برای هر دارو {drug_id: quantity}
     """
-    if selected_drugs_ids is None:
-        selected_drugs_ids = set()
+    if cart_counts is None:
+        cart_counts = {}
 
     builder = InlineKeyboardBuilder()
 
-    # 1. لیست داروها
     for drug in drugs_list:
         d_id = drug['drugs_id']
         d_name = drug['drug_pname']
-        d_price_raw = drug.get('price', 0)
 
-        # --- FIX START: تبدیل ایمن قیمت ---
-        try:
-            # تبدیل رشته علمی '2.50E+6' به فلوت و سپس اینتجر
-            price_val = int(float(d_price_raw))
-        except (ValueError, TypeError):
-            price_val = 0
-        # --- FIX END ---
+        # دریافت تعداد فعلی این دارو در سبد خرید (پیش‌فرض ۰)
+        qty = cart_counts.get(d_id, 0)
 
-        # اگر دارو انتخاب شده بود، تیک سبز، وگرنه مربع خالی
-        is_selected = d_id in selected_drugs_ids
-        icon = "✅" if is_selected else "⬜️"
+        # متن دکمه اصلی (نام دارو + تعداد)
+        # اگر تعداد ۰ باشد: "نام دارو"
+        # اگر تعداد > ۰ باشد: "نام دارو (2)"
+        if qty > 0:
+            text = f"{d_name} ({qty})"
+        else:
+            text = d_name
 
-        # نمایش قیمت با جداکننده هزارگان
-        text = f"{icon} {d_name} ({price_val:,} R)"
-        builder.button(text=text, callback_data=f"drug_select_{d_id}")
+        # ردیف دکمه‌ها برای این دارو
+        # دکمه اول: نام دارو (که نقش افزودن +1 را دارد)
+        builder.row(
+            InlineKeyboardButton(text=text, callback_data=f"drug_add_{d_id}")
+        )
 
-    builder.adjust(1)  # داروها زیر هم باشند
+        # دکمه دوم: دکمه منفی (فقط اگر تعداد بیشتر از ۰ باشد نمایش داده می‌شود)
+        if qty > 0:
+            builder.add(
+                InlineKeyboardButton(text="➖", callback_data=f"drug_dec_{d_id}")
+            )
 
-    # 2. دکمه‌های کنترلی
+    # تنظیم چیدمان:
+    # اگر دکمه منفی اضافه شد، در آن ردیف ۲ دکمه داریم، اگر نه ۱ دکمه.
+    # اما چون ما دستی از builder.row استفاده کردیم، نیازی به adjust پیچیده نیست.
+    # فقط دکمه‌های کنترلی پایین را اضافه می‌کنیم.
+
     builder.row(
-        InlineKeyboardButton(text="📂 بازگشت به دسته‌بندی‌ها (افزودن داروی دیگر)", callback_data="back_to_categories")
+        InlineKeyboardButton(text="📂 بازگشت به دسته‌بندی‌ها", callback_data="back_to_categories")
     )
 
-    if selected_drugs_ids:
-        count = len(selected_drugs_ids)
+    # محاسبه مجموع اقلام برای دکمه مشاهده
+    total_items = sum(cart_counts.values())
+    if total_items > 0:
         builder.row(
-            InlineKeyboardButton(text=f"👁‍🗨 مشاهده لیست تجویز ({count} مورد)", callback_data="review_prescription")
+            InlineKeyboardButton(text=f"👁‍🗨 مشاهده لیست تجویز ({total_items} قلم)", callback_data="review_prescription")
         )
 
     return builder.as_markup()
