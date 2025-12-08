@@ -25,7 +25,7 @@ from app.patient.keyboards import (
     get_photo_confirmation_keyboard,
     get_interactive_invoice_keyboard,
     get_shipping_info_confirmation_keyboard, get_invoice_action_keyboard, get_consultation_keyboard,
-    get_package_type_keyboard
+    get_package_type_keyboard, get_new_order_keyboard
 )
 from app.core.API_Client import APIClient
 from app.core.enums import PatientStatus, OrderStatusEnum
@@ -164,7 +164,10 @@ async def main_patient_handler(message: Message, state: FSMContext, api_client: 
     if patient_profile.get("patient_status") == PatientStatus.PAYMENT_COMPLETED.value:
         return await handle_payment_completed(message,state, api_client)
 
+    if patient_profile.get("patient_status") == PatientStatus.PAYMENT_CONFIRMED.value:
+        return await handle_payment_confirmed(message,state, api_client)
     # وضعیت پیش‌فرض برای سایر حالت‌ها
+
     await message.answer("شما در وضعیت نامشخصی قرار دارید. لطفاً با پشتیبانی تماس بگیرید.")
 
 
@@ -276,6 +279,7 @@ async def handle_awaiting_consultation(message: Message, state: FSMContext, api_
         "✅ پرونده شما در صف بررسی مشاوران قرار دارد.\n\n"
         "💬 **گفتگو با مشاور**\n"
         "شما می‌توانید در اینجا برای مشاور پیام بگذارید (متن، عکس یا ویس).\n"
+        "پس از پیام های صحیح متن پیام شما برای مشاور ارسال شد نمایش داده می شود. \n"
         "پاسخ‌های مشاور نیز همینجا نمایش داده می‌شود.\n\n"
         "پس از پایان مشاوره، پیش‌فاکتور برای شما ارسال می‌گردد."
     )
@@ -394,13 +398,26 @@ async def handle_awaiting_payment(message: Message, state: FSMContext, api_clien
     )
     await state.set_state(PatientPaymentInfo.waiting_for_receipt_photo)
     await message.answer(payment_info_text)
-    await message.answer(warning_msg)
+    if warning_msg:
+        await message.answer(warning_msg)
     await process_receipt_photo(message, state, bot)
 
 async def handle_payment_completed(message: Message, state: FSMContext, api_client: APIClient):
     await message.answer("درخاست شما در سامانه ثبت شد و در انتظاره تایید پرداخت است , پس از تایید پرداخت سفارش شما برای ارسال اماده میشود")
 
 
+async def handle_payment_confirmed(message: Message, state: FSMContext, api_client: APIClient):
+    """
+    نمایش وضعیت تایید شده به بیمار و دکمه شروع سفارش جدید
+    """
+    info_text = (
+        "✅ **پرداخت شما تایید شده است.**\n\n"
+        "سفارش شما در حال آماده‌سازی و ارسال می‌باشد. کد رهگیری پستی به زودی برای شما ارسال خواهد شد.\n\n"
+        "🔸 اگر می‌خواهید **سفارش دیگری** ثبت کنید (برای خودتان یا شخصی دیگر)، روی دکمه زیر کلیک کنید.\n"
+        "⚠️ توجه: با کلیک روی دکمه زیر، فرآیند ثبت‌نام از ابتدا آغاز می‌شود."
+    )
+
+    await message.answer(info_text, reply_markup=get_new_order_keyboard(), parse_mode="Markdown")
 
 # =============================================================================
 # 3. هندلرهای فرآیند ثبت‌نام (FSM: PatientRegistration)
@@ -611,14 +628,28 @@ async def finish_registration(callback: CallbackQuery, state: FSMContext, bot: B
     # پس از ارسال به API و ایجاد پروفایل:
     new_patient_id = await api_client.create_patient_profile(final_data_to_send)
 
+    success = False
+
     if new_patient_id:
         # ثبت پروفایل موفقیت‌آمیز بود
         logging.info(f"Patient profile created with ID: {new_patient_id}. Now changing patient status.")
+        success = True
+    else:
+        logging.info(f"Creation failed (likely exists). Attempting to UPDATE profile for {telegram_id}...")
 
-        if (await api_client.update_patient_status(telegram_id, PatientStatus.AWAITING_CONSULTATION)):
-            logging.info(f"Initial system change status successfully for patient_id: {new_patient_id}")
+        # متد update_patient را صدا می‌زنیم
+        is_updated = await api_client.update_patient(str(telegram_id), final_data_to_send)
+
+        if is_updated:
+            logging.info(f"Patient profile updated successfully for {telegram_id}.")
+            success = True
         else:
-            logging.warning(f"Patient profile was created ({new_patient_id}), but failed to change patient status.")
+            logging.error("Both Creation and Update failed.")
+
+    if success:
+
+        await api_client.update_patient_status(telegram_id, PatientStatus.AWAITING_CONSULTATION)
+        logging.info(f"Initial system change status successfully for patient_id: {new_patient_id}")
 
         # آماده‌سازی پیام برای نمایش به کاربر در تلگرام
         response_text = (
@@ -1309,3 +1340,36 @@ async def process_payment_tracking_code(message: Message, state: FSMContext, api
         await message.answer("❌ خطایی در ثبت اطلاعات پرداخت رخ داد. لطفاً با پشتیبانی تماس بگیرید.")
 
     await state.clear()
+
+
+# =============================================================================
+# 6. هندلرهای فرآیند ساخت پروفایل جدید (FSM: new profile)
+# =============================================================================
+
+@patient_router.callback_query(F.data == "start_new_order_flow")
+async def process_new_order_request(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
+    """
+    ریست کردن وضعیت بیمار به 'ثبت نام ناقص' برای شروع پروسه جدید
+    """
+    telegram_id = callback.from_user.id
+
+    # 1. تغییر وضعیت در دیتابیس به AWAITING_PROFILE_COMPLETION
+    # این باعث می‌شود سیستم فکر کند این کاربر هنوز پروفایلش کامل نیست و اجازه ثبت نام مجدد بدهد
+    is_updated = await api_client.update_patient_status(
+        str(telegram_id),
+        PatientStatus.AWAITING_PROFILE_COMPLETION.value
+    )
+
+    if is_updated:
+        # 2. پاک کردن حافظه موقت ربات
+        await state.clear()
+
+        # 3. شروع پروسه دریافت اطلاعات از اول (نام)
+        await state.set_state(PatientRegistration.waiting_for_full_name)
+
+        await callback.message.edit_text(
+            "🔄 **شروع سفارش جدید**\n\n"
+            "لطفاً جهت تشکیل پرونده جدید، نام و نام خانوادگی خود را وارد کنید:"
+        )
+    else:
+        await callback.answer("❌ خطا در برقراری ارتباط با سرور. لطفا دوباره تلاش کنید.", show_alert=True)

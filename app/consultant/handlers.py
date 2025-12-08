@@ -63,7 +63,8 @@ async def show_patient_full_info(message: Message, state: FSMContext, api_client
         f"👤 جنسیت: {'مرد' if patient.get('sex') == 'male' else 'زن'}\n"
         f"📊 سن: {patient.get('age')}  •  وزن: {patient.get('weight')}  •  قد: {patient.get('height')}\n\n"
         f"🩺 بیماری خاص: {patient.get('specific_diseases') or '—'}\n"
-        f"⚠️ شرایط ویژه: {patient.get('special_conditions') or '—'}"
+        f"⚠️ شرایط ویژه: {patient.get('special_conditions') or '—'}\n"
+        f"🛒نوع پکیج : {patient.get('package_type')}\n"
     )
     await message.answer(info, parse_mode="Markdown")
 

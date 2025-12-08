@@ -22,7 +22,7 @@ from app.utils.invoice_generator import generate_complex_invoice
 import datetime
 from aiogram.types import Message, CallbackQuery, FSInputFile, BufferedInputFile, InputMediaPhoto
 
-from ..core.enums import PatientStatus
+from ..core.enums import PatientStatus, OrderStatusEnum
 from ..utils.date_helper import to_jalali
 
 casher_router = Router()
@@ -418,7 +418,7 @@ async def process_approve_payment(callback: CallbackQuery, state: FSMContext, ap
                 "payment_date": jalali_text,
                 "seller_info": {
                     "name": "داروخانه دکتر فاضل",
-                    "address": "تهران",
+                    "address": "مشهد",
                     "phone": "021-00000000"
                 },
                 "buyer_info": {
@@ -446,6 +446,15 @@ async def process_approve_payment(callback: CallbackQuery, state: FSMContext, ap
             )
 
             if patient_tg_id:
+                try:
+                    await api_client.update_patient_status(str(current_payment.get("telegram_id")),PatientStatus.PAYMENT_CONFIRMED.value)
+                    updated_order = await api_client.update_order(
+                        order_id=order_id,
+                        order_status=OrderStatusEnum.CONFIRM.value)  # وضعیت را به در انتظار پرداخت تغییر می‌دهیم
+
+                except Exception as e:
+                    pass
+
                 try:
                     await bot.send_message(
                         patient_tg_id,

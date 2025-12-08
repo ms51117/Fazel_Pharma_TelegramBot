@@ -139,3 +139,9 @@ def get_package_type_keyboard() -> InlineKeyboardMarkup:
 
     builder.adjust(1)
     return builder.as_markup()
+
+
+def get_new_order_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📝 ثبت سفارش جدید", callback_data="start_new_order_flow")
+    return kb.as_markup()
