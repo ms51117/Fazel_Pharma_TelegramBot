@@ -7,6 +7,9 @@ from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
+from app.middleware.middlewares import ThrottlingMiddleware # فرض بر اینکه فایل را ساختید
+
+
 from app.casher.handlers import casher_router
 from app.consultant.handlers import consultant_router
 from app.core.setting import settings
@@ -35,6 +38,10 @@ async def main() -> None:
     # پاس دادن نمونه api_client به dispatcher در زمان ساخت
     # حالا در تمام فیلترها و میدل‌ورها به متغیر 'api_client' دسترسی داریم
     dp = Dispatcher(api_client=api_client)
+
+    # فعال کردن Throttling برای همه پیام‌ها (مثلا 0.7 ثانیه فاصله بین پیام‌ها)
+    dp.message.middleware(ThrottlingMiddleware(limit=0.7))
+    dp.callback_query.middleware(ThrottlingMiddleware(limit=0.7))
 
     # ۳. ثبت روترها با فیلتر نقش
     # این روتر فقط برای کاربرانی با نقش "Admin" فعال می‌شود
