@@ -20,6 +20,10 @@ from .keyboards import (
 
 from app.utils.invoice_generator import generate_complex_invoice
 import datetime
+from aiogram.types import Message, CallbackQuery, FSInputFile, BufferedInputFile, InputMediaPhoto
+
+from ..core.enums import PatientStatus
+from ..utils.date_helper import to_jalali
 
 casher_router = Router()
 logger = logging.getLogger(__name__)
@@ -86,9 +90,10 @@ async def refresh_payment_list(message_obj: Message, state: FSMContext, api_clie
     await state.update_data(selected_date=date)
 
     payments = await api_client.get_pending_payments_by_date(date)
+    jalali_text = to_jalali(date, include_time=False)
 
     if not payments:
-        await message_obj.edit_text(f"✅ تمام تراکنش‌های تاریخ {date} بررسی شدند.")
+        await message_obj.edit_text(f"✅ تمام تراکنش‌های تاریخ {jalali_text} بررسی شدند.")
         # بازگشت به صفحه اصلی
         await start_casher_panel_from_message(message_obj, state, api_client)
         return
@@ -97,7 +102,7 @@ async def refresh_payment_list(message_obj: Message, state: FSMContext, api_clie
 
     keyboard = create_pending_payments_keyboard(payments)
     await message_obj.edit_text(
-        f"📂 **تراکنش‌های تاریخ {date}**\n\n"
+        f"📂 **تراکنش‌های تاریخ {jalali_text}**\n\n"
         f"تعداد در انتظار: {len(payments)} مورد\n"
         f"لطفاً یک مورد را جهت بررسی انتخاب کنید:",
         reply_markup=keyboard,
@@ -132,111 +137,174 @@ async def process_date_choice(callback: CallbackQuery, state: FSMContext, api_cl
 @casher_router.callback_query(CasherReview.choosing_payment, F.data.startswith("casher_payment_"))
 async def process_payment_choice(callback: CallbackQuery, state: FSMContext, api_client: APIClient):
     """
-    نمایش جزئیات پرداخت.
-    اصلاحیه: دریافت اطلاعات تکمیلی کاربر (نام و تلگرام آیدی) از سرور در لحظه کلیک.
+    نسخه جدید: نمایش آلبوم تمام رسیدها + دریافت صحیح نام بیمار
     """
+    # 1. دریافت شناسه پرداخت انتخابی
     try:
         payment_list_id = int(callback.data.split("_")[-1])
     except ValueError:
         await callback.answer("شناسه نامعتبر.")
         return
 
-    data = await state.get_data()
-    payments = data.get("pending_payments", [])
+    await callback.answer("⏳ دریافت اطلاعات کامل...")
 
-    # پیدا کردن پرداخت در لیست موجود
-    selected_payment = next((p for p in payments if p.get("payment_list_id") == payment_list_id), None)
+    # 2. دریافت اطلاعات دقیق پرداخت از API
+    current_payment = await api_client.get_payment_by_id(payment_list_id)
+    if not current_payment:
+        # فال‌بک به حافظه اگر API جواب نداد
+        data = await state.get_data()
+        payments = data.get("pending_payments", [])
+        current_payment = next((p for p in payments if int(p.get("payment_list_id")) == payment_list_id), None)
 
-    if not selected_payment:
-        await callback.answer("اطلاعات قدیمی شده، لیست رفرش می‌شود...")
-        current_date = data.get("selected_date")
-        if current_date:
-            await refresh_payment_list(callback.message, state, api_client, current_date)
-        else:
-            await start_casher_panel(callback, state, api_client)
+    if not current_payment:
+        await callback.message.answer("اطلاعات پرداخت یافت نشد.")
         return
 
-    # ==========================================================================
-    #  شروع اصلاحیه: تکمیل اطلاعات ناقص (نام و تلگرام آیدی)
-    # ==========================================================================
-    await callback.answer("⏳ در حال دریافت جزئیات...")
+    order_id = current_payment.get("order_id")
+    order_info = await api_client.get_order_by_id(order_id)
 
-    # 1. استخراج شناسه کاربر از پرداخت
-    user_db_id = selected_payment.get("patient_id")
+    if not order_info :
+        await callback.message.answer("اطلاعات سفارش یافت نشد.")
 
-    # 2. دریافت اطلاعات کامل کاربر از سرور
-    if user_db_id:
-        try:
-            # فرض بر این است که این متد در API_Client وجود دارد (در پایین توضیح داده شده)
-            user_info = await api_client.get_user_details_by_id(user_db_id)
+    patient_id = order_info.get("patient_id")
 
-            if user_info:
-                # استخراج نام
+    # 3. دریافت اطلاعات بیمار (حل مشکل نام و تلگرام آیدی)
+    patient_name = "ناشناس"
+    patient_tg_id = "---"
 
-                full_name = user_info.get("full_name").strip() or "کاربر بدون نام"
+    if patient_id:
+        # فراخوانی متد جدیدی که اضافه کردیم
+        patient_info = await api_client.get_patient_by_id(patient_id)
+        if patient_info:
+            patient_name = patient_info.get("full_name") or "بدون نام"
+            patient_tg_id = patient_info.get("user_telegram_id") or patient_info.get("telegram_id") or "---"
 
+            # آپدیت کردن آبجکت پرداخت با اطلاعات دقیق برای مراحل بعد (مثل رد کردن)
+            current_payment["full_name"] = patient_name
+            current_payment["telegram_id"] = patient_tg_id
 
-                # استخراج تلگرام آیدی (با چک کردن کلیدهای مختلف)
-                tg_id = user_info.get("user_telegram_id") or user_info.get("telegram_id") or user_info.get("id")
+    # 4. دریافت تمام پرداختی‌های این سفارش (برای گالری عکس و تاریخچه)
+    all_payments = []
+    if order_id:
+        all_payments = await api_client.get_all_payments_by_order_id(order_id)
+        # مرتب‌سازی: قدیمی‌ترین اول باشد
+        if all_payments:
+            all_payments.sort(key=lambda x: x.get('created_at', ''), reverse=False)
 
-                # بروزرسانی دیکشنری selected_payment با اطلاعات جدید
-                selected_payment["full_name"] = full_name
-                selected_payment["telegram_id"] = tg_id
+    # 5. محاسبات مالی
+    total_order_price = 0
+    paid_approved = 0
 
-                # لاگ برای اطمینان
-                logging.info(f"User Details Fetched: Name={full_name}, TG_ID={tg_id}")
-        except Exception as e:
-            logging.error(f"Error fetching user details for ID {user_db_id}: {e}")
+    if order_id:
+        order_details = await api_client.get_order_by_id(order_id)
+        if order_details:
+            for item in order_details.get("order_list", []):
+                try:
+                    total_order_price += int(float(item.get("price", 0))) * int(item.get("qty", 1))
+                except:
+                    pass
 
-    # ذخیره مجدد در State (تا در مرحله تایید/رد دسترسی داشته باشیم)
-    await state.update_data(current_payment=selected_payment)
-    # ==========================================================================
+    # ساخت لیست مدیا (عکس‌ها) و متن تاریخچه
+    media_group = []
+    history_text = "\n📋 **سابقه تراکنش‌ها (به ترتیب عکس‌ها):**\n"
 
-    # نمایش اطلاعات به صندوقدار
-    full_name = selected_payment.get('full_name') or "نامشخص"
-    telegram_id = selected_payment.get('telegram_id') or "نامشخص"
+    counter = 1
+    has_current_receipt_photo = False
 
-    # هندل کردن قیمت (رفع مشکل نمایش None)
-    raw_price = selected_payment.get('payment_value') or selected_payment.get('amount') or 0
-    try:
-        price_val = int(float(raw_price))
-        price_str = f"{price_val:,}"
-    except (ValueError, TypeError):
-        price_str = "0"
+    if all_payments:
+        for p in all_payments:
+            # استخراج داده‌ها
+            try:
+                p_val = int(float(p.get('payment_value', 0)))
+            except:
+                p_val = 0
 
-    info_text = (
-        f"🔍 **بررسی تراکنش**\n\n"
-        f"👤 **نام بیمار:** {full_name}\n"
-        f"🆔 **آیدی تلگرام:** `{telegram_id}`\n"
-        f"💰 **مبلغ:** `{price_str} ریال`\n"
-        f"📅 **تاریخ:** `{data.get('selected_date')}`\n"
-        f"🔖 **کد پیگیری:** `{selected_payment.get('payment_refer_code') or '---'}`"
-    )
+            p_status = p.get('payment_status')
+            p_date = to_jalali(p.get('created_at'), include_time=False)
+            p_path = p.get('payment_path_file')
+            p_id = int(p.get('payment_list_id'))
 
+            if p_status == "Accepted":
+                paid_approved += p_val
+                status_icon = "✅ تایید شده"
+            elif p_status == "Rejected":
+                status_icon = "❌ رد شده"
+            else:
+                status_icon = "⏳ در انتظار"
+
+            # علامت‌گذاری رسید فعلی
+            is_current = "👈 **(این رسید)**" if p_id == payment_list_id else ""
+
+            # افزودن به متن تاریخچه
+            history_text += f"{counter}. {status_icon} | مبلغ: `{p_val:,}` | {p_date} {is_current}\n"
+
+            # افزودن به آلبوم عکس (اگر فایل دارد)
+            if p_path:
+                try:
+                    # کپشن برای هر عکس (فقط در برخی کلاینت‌ها نمایش داده می‌شود، اما بودنش خوب است)
+                    caption_part = f"رسید #{counter} - {status_icon} - مبلغ: {p_val:,}"
+                    media_group.append(InputMediaPhoto(media=FSInputFile(p_path), caption=caption_part))
+
+                    if p_id == payment_list_id:
+                        has_current_receipt_photo = True
+                except Exception as e:
+                    logging.error(f"Error adding photo to album: {p_path} - {e}")
+
+            counter += 1
+    else:
+        # اگر لیست خالی بود، حداقل اطلاعات پرداخت فعلی را اضافه کن
+        history_text = "⚠️ سوابق یافت نشد."
+        path = current_payment.get("payment_path_file")
+        if path:
+            media_group.append(InputMediaPhoto(media=FSInputFile(path), caption="رسید فعلی"))
+            has_current_receipt_photo = True
+
+    # 6. نمایش خروجی
+
+    # حذف پیام قبلی (لیست دکمه‌ها) برای تمیز شدن صفحه
     await callback.message.delete()
 
-    receipt_photo_path = selected_payment.get("payment_path_file")
+    # الف) ارسال آلبوم عکس‌ها (اگر عکسی موجود است)
+    if media_group:
+        try:
+            await callback.message.answer_media_group(media=media_group)
+        except Exception as e:
+            await callback.message.answer(f"⚠️ خطا در نمایش عکس‌ها: فایل‌ها در سرور موجود نیستند.\n{e}")
+    else:
+        await callback.message.answer("🖼 **هیچ عکس رسیدی برای این سفارش یافت نشد!**")
+
+    # ب) ارسال متن جزئیات + دکمه‌های عملیات (در یک پیام جداگانه زیر عکس‌ها)
+    try:
+        current_amount = int(float(current_payment.get("payment_value", 0)))
+    except:
+        current_amount = 0
+
+    remaining = total_order_price - paid_approved
+
+    info_text = (
+        f"👤 **بیمار:** {patient_name}\n"
+        f"🆔 **آیدی:** `{patient_tg_id}`\n"
+        f"🔢 **شماره سفارش:** `{order_id}`\n"
+        "------------------------------\n"
+        f"💰 **کل سفارش:** `{total_order_price:,}`\n"
+        f"💵 **پرداخت شده (تایید شده):** `{paid_approved:,}`\n"
+        f"📊 **مانده حساب:** `{remaining:,}`\n"
+        "------------------------------\n"
+        f"🖼 **مبلغ این رسید (در حال بررسی):** `{current_amount:,}` تومان\n"
+        f"{history_text}"
+    )
+
+    # ذخیره در state
+    await state.update_data(current_payment=current_payment)
+
+    # کیبورد عملیات (تایید / رد)
     keyboard = create_payment_verification_keyboard(payment_list_id)
 
-    sent = False
-    if receipt_photo_path:
-        try:
-            await callback.message.answer_photo(
-                photo=FSInputFile(receipt_photo_path),
-                caption=info_text,
-                parse_mode='Markdown',
-                reply_markup=keyboard,
-            )
-            sent = True
-        except Exception as e:
-            logger.error(f"Failed to send local photo: {e}")
-
-    if not sent:
-        await callback.message.answer(
-            f"{info_text}\n\n⚠️ **تصویر رسید یافت نشد (فایل حذف شده یا مسیر اشتباه است).**",
-            parse_mode='Markdown',
-            reply_markup=keyboard,
-        )
+    await callback.message.answer(
+        text=info_text,
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
 
     await state.set_state(CasherReview.verifying_payment)
 
@@ -342,11 +410,12 @@ async def process_approve_payment(callback: CallbackQuery, state: FSMContext, ap
 
 
             today_str = datetime.datetime.now().strftime("%Y/%m/%d")
+            jalali_text = to_jalali(today_str, include_time=False)
 
             invoice_context = {
-                "invoice_date": today_str,
+                "invoice_date": jalali_text,
                 "invoice_number": str(order_id),
-                "payment_date": today_str,
+                "payment_date": jalali_text,
                 "seller_info": {
                     "name": "داروخانه دکتر فاضل",
                     "address": "تهران",
@@ -424,60 +493,101 @@ async def process_approve_payment(callback: CallbackQuery, state: FSMContext, ap
 # ==============================================================================
 # 5. رد پرداخت
 # ==============================================================================
+# 1. شروع فرآیند رد کردن
 @casher_router.callback_query(CasherReview.verifying_payment, F.data.startswith("reject_payment_"))
 async def process_reject_payment_start(callback: CallbackQuery, state: FSMContext):
     payment_id = int(callback.data.split("_")[-1])
+    # ذخیره آیدی پرداخت
     await state.update_data(current_payment_id_to_reject=payment_id)
 
     await callback.message.delete()
     await callback.message.answer(
-        "❌ لطفاً **دلیل رد کردن** را بنویسید:",
+        "❌ **قدم اول:**\nلطفاً **دلیل رد کردن** این رسید را بنویسید (این متن برای کاربر ارسال می‌شود):",
         reply_markup=create_rejection_back_keyboard(),
         parse_mode="Markdown"
     )
+    # رفتن به وضعیت دریافت دلیل
     await state.set_state(CasherReview.entering_rejection_reason)
     await callback.answer()
 
 
+# 2. دریافت دلیل و پرسش مبلغ واقعی
 @casher_router.message(CasherReview.entering_rejection_reason, F.text)
-async def process_rejection_reason(message: Message, state: FSMContext, api_client: APIClient, bot: Bot):
+async def process_rejection_reason(message: Message, state: FSMContext):
     reason = message.text
-    casher_id = message.from_user.id
+    # ذخیره دلیل در State
+    await state.update_data(reject_reason=reason)
 
-    user_info = await api_client.get_user_details_by_telegram_id(casher_id)
-    if not user_info:
-        await message.answer("خطای دسترسی کاربر.")
+    # حالا مبلغ صحیح را می‌پرسیم
+    await message.answer(
+        "💰 **قدم دوم:**\n"
+        "لطفاً **مبلغ واقعی** که در عکس رسید مشاهده می‌کنید را به تومان وارد کنید.\n"
+        "(این مبلغ جایگزین مبلغی می‌شود که کاربر وارد کرده بود).\n\n"
+        "اگر مبلغ در عکس ناخوانا است یا رسید نامعتبر است، عدد 0 را وارد کنید.",
+        reply_markup=create_rejection_back_keyboard()
+    )
+    # رفتن به وضعیت دریافت مبلغ واقعی
+    await state.set_state(CasherReview.entering_real_amount)
+
+
+# 3. دریافت مبلغ واقعی و اعمال تغییرات در دیتابیس
+@casher_router.message(CasherReview.entering_real_amount)
+async def process_real_amount_and_reject(message: Message, state: FSMContext, api_client: APIClient, bot: Bot):
+    # بررسی عدد بودن ورودی
+    if not message.text.isdigit():
+        await message.answer("❌ لطفاً مبلغ را فقط به صورت عدد (لاتین) وارد کنید.")
         return
 
+    real_amount = int(message.text)
+
+    # دریافت اطلاعات از State
     data = await state.get_data()
     payment_id = data.get("current_payment_id_to_reject")
+    reason = data.get("reject_reason")
+    casher_id = message.from_user.id
 
+    # دریافت اطلاعات صندوق‌دار برای ثبت در لاگ
+    user_info = await api_client.get_user_details_by_telegram_id(casher_id)
+    db_user_id = int(user_info.get('user_id') or 1) if user_info else 1
+
+    # آماده‌سازی پلود برای آپدیت
     payload = {
         "payment_status": "Rejected",
         "payment_status_explain": reason,
-        "user_id": int(user_info.get('user_id') or 1),
+        "payment_value": real_amount,  # <--- آپدیت مبلغ با عدد واقعی که صندوق‌دار دیده
+        "user_id": db_user_id,
     }
 
-    wait = await message.answer("⏳ در حال ثبت رد...")
+    wait_msg = await message.answer("⏳ در حال ثبت رد و اصلاح مبلغ...")
+
+    # فراخوانی API
     result = await api_client.update_payment(payment_id, payload)
 
     if result:
+        # اطلاع‌رسانی به کاربر (اختیاری)
         current_payment = data.get("current_payment", {})
         patient_tid = current_payment.get("telegram_id")
+        await api_client.update_patient_status(str(current_payment.get("telegram_id")),PatientStatus.AWAITING_PAYMENT.value)
+
         if patient_tid:
             try:
                 await bot.send_message(
                     patient_tid,
-                    f"❌ پرداخت شما تایید نشد.\nعلت: {reason}"
+                    f"❌ پرداخت شما تایید نشد.\n"
+                    f"📝 **علت:** {reason}\n"
+                    f"🔢 **مبلغ اصلاح شده توسط صندوق‌دار:** {real_amount:,} تومان\n"
+                    "لطفاً مجدداً بررسی کنید."
                 )
             except:
                 pass
 
-        await wait.delete()
-        temp_msg = await message.answer("❌ رد شد. بروزرسانی لیست...")
+        await wait_msg.delete()
+        temp_msg = await message.answer(f"✅ رسید رد شد و مبلغ به {real_amount:,} تغییر یافت.\n🔄 بازگشت به لیست...")
+
+        # بازگشت به لیست پرداخت‌ها
         await refresh_payment_list(temp_msg, state, api_client, data.get("selected_date"))
     else:
-        await wait.edit_text("خطا در انجام عملیات.")
+        await wait_msg.edit_text("❌ خطا در ثبت اطلاعات در سیستم.")
 
 
 # ==============================================================================

@@ -256,6 +256,31 @@ class APIClient:
             logging.error(f"Error fetching patient details for telegram_id {telegram_id}: {e}")
             return None
 
+    async def get_patient_by_id(self, patient_id: int) -> dict | None:
+        """
+        دریافت مشخصات کامل بیمار با استفاده از شناسه عددی (ID)
+        """
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            # فرض بر این است که اندپوینت خواندن با ID به صورت زیر است
+            # اگر اندپوینت شما فرق دارد (مثلاً /patient/read/{id}) اینجا را اصلاح کنید
+            url = f"{self._base_url}/patient/by-id/{patient_id}"
+
+            # نکته: اگر اندپوینت read-by-id ندارید، می‌توانید از اندپوینت ادمین استفاده کنید
+            # یا اگر اندپوینت /patient/{id} دارید تست کنید.
+
+            response = await self._client.get(url, headers=headers)
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logging.warning(f"Failed to fetch patient by ID {patient_id}. Status: {response.status_code}")
+                return None
+        except Exception as e:
+            logging.error(f"Error fetching patient {patient_id}: {e}")
+            return None
+
     # -----------------------------------------------------
 
     async def get_user_details_by_telegram_id(self, telegram_id: int) -> dict | None:
@@ -648,6 +673,50 @@ class APIClient:
         except Exception as e:
             logging.error(f"Unexpected error updating payment {payment_id}: {e}", exc_info=True)
             return None
+
+    # در فایل API_Client.py اضافه کنید
+
+    async def get_payment_by_id(self, payment_id: int) -> dict | None:
+        """
+        دریافت جزئیات کامل یک پرداخت خاص با استفاده از شناسه آن.
+        """
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{self._base_url}/payment/{payment_id}"
+
+            response = await self._client.get(url, headers=headers)
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logging.warning(f"Failed to fetch payment {payment_id}. Status: {response.status_code}")
+                return None
+        except Exception as e:
+            logging.error(f"Error fetching payment {payment_id}: {e}")
+            return None
+
+    async def get_all_payments_by_order_id(self, order_id: int) -> list[dict]:
+        """
+        تمام پرداختی‌های (رسیدهای) مرتبط با یک سفارش خاص را دریافت می‌کند.
+        شامل: تایید شده، رد شده و در انتظار بررسی.
+        """
+        try:
+            token = await self.login_check()
+            headers = {"Authorization": f"Bearer {token}"}
+            # فرض بر این است که چنین اندپوینتی در بک‌اند دارید یا می‌توانید بسازید
+            # اگر ندارید، باید از همان اندپوینتی که لیست کل پرداخت‌ها را فیلتر می‌کند استفاده کنید
+            url = f"{self._base_url}/payment/by-order/{order_id}"
+
+            logging.info(f"Fetching payment history for order {order_id}")
+            response = await self._client.get(url, headers=headers)
+
+            if response.status_code == 200:
+                return response.json()
+            return []
+        except Exception as e:
+            logging.error(f"Error fetching payments for order {order_id}: {e}")
+            return []
 
     async def read_messages_history_by_patient_id(self, patient_id: int) -> list[dict]:
         """

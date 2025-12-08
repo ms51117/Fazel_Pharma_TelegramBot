@@ -38,6 +38,7 @@ from .keyboards import (
     get_main_menu_keyboard,
     get_consultant_chat_keyboard
 )
+from ..utils.date_helper import to_jalali
 
 consultant_router = Router()
 logger = logging.getLogger(__name__)
@@ -215,12 +216,15 @@ async def process_date_choice(callback: CallbackQuery, state: FSMContext, api_cl
     date = callback.data.split("_")[-1]
     await state.update_data(selected_date=date)
 
-    await callback.message.edit_text(f"⏳ در حال دریافت لیست بیماران برای تاریخ {date}...")
+    jalali_date = to_jalali(date, include_time=False)
+
+
+    await callback.message.edit_text(f"⏳ در حال دریافت لیست بیماران برای تاریخ {jalali_date}...")
 
     patients = await api_client.get_waiting_for_consultation_patients_by_date(date)
 
     if not patients:
-        await callback.message.edit_text(f"خطا: بیماری برای تاریخ {date} یافت نشد. لطفاً دوباره تلاش کنید.")
+        await callback.message.edit_text(f"خطا: بیماری برای تاریخ {jalali_date} یافت نشد. لطفاً دوباره تلاش کنید.")
         # می‌توانیم به مرحله قبل برگردیم یا فرآیند را تمام کنیم
         await state.clear()
         return
@@ -230,7 +234,7 @@ async def process_date_choice(callback: CallbackQuery, state: FSMContext, api_cl
 
     keyboard = create_patients_keyboard(patients)
     await callback.message.edit_text(
-        f"👥 لیست بیماران ثبت‌نام شده در تاریخ {date}:\nلطفاً بیمار مورد نظر را برای مشاهده جزئیات انتخاب کنید.",
+        f"👥 لیست بیماران ثبت‌نام شده در تاریخ {jalali_date}:\nلطفاً بیمار مورد نظر را برای مشاهده جزئیات انتخاب کنید.",
         reply_markup=keyboard
     )
     await state.set_state(ConsultantFlow.choosing_patient)

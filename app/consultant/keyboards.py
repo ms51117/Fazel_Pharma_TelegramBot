@@ -4,6 +4,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from app.utils.date_helper import to_jalali
+
 
 
 def create_dates_keyboard(dates: list[str]) -> InlineKeyboardMarkup:
@@ -11,7 +13,9 @@ def create_dates_keyboard(dates: list[str]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for date in dates:
         # Callback_data را با یک پیشوند مشخص می‌کنیم تا بعدا راحت‌تر فیلتر کنیم
-        builder.button(text=date, callback_data=f"consultant_date_{date}")
+        jalali_text = to_jalali(date, include_time=False)
+
+        builder.button(text=jalali_text, callback_data=f"consultant_date_{date}")
     builder.adjust(2)  # نمایش دکمه‌ها در دو ستون
     return builder.as_markup()
 

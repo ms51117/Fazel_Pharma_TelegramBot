@@ -321,17 +321,80 @@ async def handle_awaiting_payment(message: Message, state: FSMContext, api_clien
         await message.answer("خطا: سفارشی در انتظار پرداخت یافت نشد. لطفاً با پشتیبانی تماس بگیرید.")
         return
 
-    order_id = orders[-1]['order_id']  # گرفتن شناسه آخرین سفارش در انتظار پرداخت
-    await state.update_data(paying_order_id=order_id, patient_id=patient_id)
+    # دریافت آخرین سفارش
+    last_order = orders[-1]
+    order_id = last_order['order_id']
+    order_items = last_order.get('order_list', [])
+
+    # --- ۱. محاسبه مبلغ کل فاکتور ---
+    total_price = Decimal('0')
+    for item in order_items:
+        try:
+            qty = int(item.get('qty', 0))
+            price_str = str(item.get('price', 0))  # تبدیل به رشته برای امنیت Decimal
+            price = Decimal(price_str)
+            total_price += (price * qty)
+        except Exception:
+            continue
+
+    final_amount_int = int(total_price)
+
+    # --- ۲. ذخیره مبلغ در State (نکته کلیدی) ---
+    await state.update_data(
+        paying_order_id=order_id,
+        patient_id=patient_id,
+        final_payment_amount=final_amount_int  # <--- ذخیره مبلغ محاسبه شده
+
+    )
+
+    # --- اضافه کردن: بررسی اینکه آیا قبلاً پرداختی رد شده داشته است؟ ---
+    # این لیست تمام تلاش‌های پرداخت قبلی بیمار برای این سفارش را می‌گیرد
+    past_payments = await api_client.get_all_payments_by_order_id(order_id)
+
+    rejected_payment = next((p for p in past_payments if p.get('payment_status') == 'Rejected'), None)
+
+    warning_msg = ""
+    if rejected_payment:
+        # اگر قبلاً پرداختی رد شده داشته، یک هشدار به متن اضافه می‌کنیم
+        warning_msg = (
+            "⚠️ **توجه:** پرداخت قبلی شما توسط واحد مالی تایید نشد.\n"
+            "لطفاً مبلغ باقی‌مانده یا اصلاح شده را واریز کرده و رسید جدید را ارسال کنید.\n\n"
+        )
+    # -------------------------------------------------------------
+
+
+    # --- تغییرات جدید: دریافت اطلاعات بانکی از سرور ---
+
+    # 1. دریافت شماره کارت
+    card_number = await api_client.get_bot_message(
+        key="bank_card_number",
+        default="0000-0000-0000-0000"
+    )
+
+    # 2. دریافت شماره شبا
+    sheba_number = await api_client.get_bot_message(
+        key="bank_sheba_number",
+        default="IR000000000000000000000000"
+    )
+
+    # 3. دریافت نام صاحب حساب
+    account_owner = await api_client.get_bot_message(
+        key="bank_owner_name",
+        default="مدیریت داروخانه"
+    )
 
     payment_info_text = (
-        "سفارش شما تایید شد. لطفاً هزینه را به یکی از حساب‌های زیر واریز کرده و سپس اطلاعات پرداخت را ثبت کنید.\n\n"
-        "<b>شماره کارت:</b>\n<code>1234-5678-9012-3456</code>\n(به نام ...)\n\n"
-        "<b>شماره شبا:</b>\n<code>IR123456789012345678901234</code>\n\n"
-        "پس از واریز، لطفاً عکس واضح از رسید پرداخت را ارسال کنید."
+        "✅ سفارش شما تایید شد.\n\n"
+        "لطفاً هزینه را به حساب زیر واریز کرده و سپس اطلاعات پرداخت را ثبت کنید:\n\n"
+        f"👤 <b>به نام:</b> {account_owner}\n\n"
+        f"💳 <b>شماره کارت:</b>\n<code>{card_number}</code>\n"
+        "(برای کپی کردن شماره کارت، روی آن ضربه بزنید)\n\n"
+        f"🏦 <b>شماره شبا:</b>\n<code>{sheba_number}</code>\n\n"
+        "📸 پس از واریز، لطفاً عکس واضح از رسید پرداخت را ارسال کنید."
     )
     await state.set_state(PatientPaymentInfo.waiting_for_receipt_photo)
     await message.answer(payment_info_text)
+    await message.answer(warning_msg)
     await process_receipt_photo(message, state, bot)
 
 async def handle_payment_completed(message: Message, state: FSMContext, api_client: APIClient):
@@ -424,7 +487,11 @@ async def process_height(message: Message, state: FSMContext):
 @patient_router.callback_query(PatientRegistration.waiting_for_package_type, F.data.startswith("package_"))
 async def process_package_selection(callback: CallbackQuery, state: FSMContext):
     # دریافت انتخاب کاربر (ECONOMIC یا PREMIUM)
-    package_type = callback.data.split("_")[1]
+    raw_type = callback.data.split("_")[1]
+
+    # --- اصلاح: تبدیل به حروف کوچک (lowercase) ---
+    # چون Enum در بک‌اند مقادیر "economic" و "premium" را قبول می‌کند
+    package_type = raw_type.lower()
 
     # ذخیره در state
     await state.update_data(package_type=package_type)
@@ -432,7 +499,7 @@ async def process_package_selection(callback: CallbackQuery, state: FSMContext):
     # تعیین وضعیت بعدی: توضیحات بیماری
     await state.set_state(PatientRegistration.waiting_for_disease_description)
 
-    pkg_name = "پریمیوم (VIP)" if package_type == 'PREMIUM' else "اقتصادی"
+    pkg_name = "پریمیوم (VIP)" if package_type == 'premium' else "اقتصادی"
 
     await callback.message.edit_text(
         f"✅ پکیج **{pkg_name}** برای شما انتخاب شد.\n\n"
@@ -832,6 +899,10 @@ async def process_invoice_edit_request(callback: CallbackQuery, state: FSMContex
 
     # 2. واکشی اطلاعات به‌روز سفارش از API
     order_data_list  = await api_client.get_orders_by_status(patient_id, OrderStatusEnum.CREATED.value)
+    # هندل کردن حالتی که لیست خالی باشد
+    if not order_data_list:
+        await callback.answer("سفارش فعالی یافت نشد.", show_alert=True)
+        return
     order_data = order_data_list[0]  # اولین و تنها عضو لیست را انتخاب می‌کنیم
 
     if not order_data:
@@ -856,8 +927,8 @@ async def process_invoice_edit_request(callback: CallbackQuery, state: FSMContex
     # 4. ذخیره اطلاعات لازم در FSM state
     await state.update_data(
         editing_order_id=order_id,
-        initial_cart=editable_items,  # نسخه اصلی برای بازنشانی (reset)
-        current_cart=editable_items.copy()  # نسخه‌ای که تغییر می‌کند
+        initial_cart=copy.deepcopy(editable_items),   # نسخه اصلی برای بازنشانی (reset)
+        current_cart=copy.deepcopy(editable_items)    # نسخه‌ای که تغییر می‌کند
     )
 
     # 5. تغییر وضعیت FSM به حالت ویرایش
@@ -1115,7 +1186,7 @@ async def process_national_id(message: Message, state: FSMContext):
     await state.update_data(national_id=national_id)
     await state.set_state(PatientShippingInfo.waiting_for_phone_number)
     await message.answer("لطفاً شماره تماس خود را وارد کنید:\n"
-                         "دقت داشته باشید که شماره تماس باید با 09 شروع شود:")
+                         "دقت داشته باشید که شماره تماس باید با 09 شروع شود و کیبورد گوشی روی حالت انگلیسی باشد:")
 
 
 @patient_router.message(PatientShippingInfo.waiting_for_phone_number)
@@ -1125,7 +1196,7 @@ async def process_phone_number(message: Message, state: FSMContext):
     phone = message.text.strip()
 
     if not phone.isdigit() or not phone.startswith("09") or len(phone) != 11:
-        await message.answer("❌ شماره تماس باید فقط شامل ۱۱ رقم و با 09 شروع شود. مثال: 09123456789")
+        await message.answer("❌ شماره تماس باید فقط شامل ۱۱ رقم و با 09 شروع شود و کیبورد انگلیسی باشد. مثال: 09123456789")
         return
 
     await state.update_data(phone_number=phone)
@@ -1197,19 +1268,17 @@ async def process_receipt_photo(message: Message, state: FSMContext, bot: Bot):
             return
 
         await state.update_data(receipt_photo_path=saved_path)
-        await state.set_state(PatientPaymentInfo.waiting_for_amount)
-        await message.answer("✅ عکس رسید دریافت شد.\n\nلطفاً مبلغ واریزی را به تومان وارد کنید:")
+        await state.set_state(PatientPaymentInfo.waiting_for_tracking_code)
+        await message.answer(
+            "✅ عکس رسید دریافت شد.\n\n"
+            "لطفاً **کد پیگیری** یا شماره ارجاع تراکنش را وارد کنید:\n"
+            "(اگر روی رسید کدی نیست، بنویسید 'ندارد')"
+        )
 
     except Exception as e:
         await message.answer("⚠️ هنگام پردازش عکس خطایی رخ داد. لطفاً دوباره تلاش کنید.")
         import logging; logging.error(f"Error in process_receipt_photo: {e}", exc_info=True)
 
-@patient_router.message(PatientPaymentInfo.waiting_for_amount)
-async def process_payment_amount(message: Message, state: FSMContext):
-    # اعتبارسنجی عدد بودن
-    await state.update_data(amount=message.text)
-    await state.set_state(PatientPaymentInfo.waiting_for_tracking_code)
-    await message.answer("کد پیگیری پرداخت (در صورت وجود) را وارد کنید. اگر ندارد، بنویسید 'ندارد'.")
 
 
 @patient_router.message(PatientPaymentInfo.waiting_for_tracking_code)
@@ -1221,7 +1290,7 @@ async def process_payment_tracking_code(message: Message, state: FSMContext, api
 
     payment_payload = {
         "order_id": data.get("paying_order_id"),
-        "payment_value": int(data.get("amount")),
+        "payment_value": int(data.get("final_payment_amount")),
         "payment_refer_code": data.get("tracking_code"),
         "payment_path_file": receipt_path
     }

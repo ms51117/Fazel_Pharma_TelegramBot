@@ -2,6 +2,8 @@
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from app.utils.date_helper import to_jalali
+
 
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     """منوی اصلی صندوق داروسازی فاضل."""
@@ -16,7 +18,9 @@ def create_payment_dates_keyboard(dates: list[str]) -> InlineKeyboardMarkup:
     """برای تاریخ‌هایی که پرداخت در انتظار دارند، کیبورد می‌سازد."""
     builder = InlineKeyboardBuilder()
     for date in dates:
-        builder.button(text=date, callback_data=f"casher_date_{date}")
+        jalali_text = to_jalali(date, include_time=False)
+
+        builder.button(text=jalali_text, callback_data=f"casher_date_{date}")
     builder.adjust(2)
     return builder.as_markup()
 

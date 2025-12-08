@@ -11,3 +11,5 @@ class CasherReview(StatesGroup):
     choosing_payment = State()      # مرحله انتخاب پرداخت (بیمار) از لیست
     verifying_payment = State()     # مرحله مشاهده جزئیات و تایید/رد پرداخت
     entering_rejection_reason = State() # مرحله وارد کردن دلیل رد پرداخت
+    entering_real_amount = State()  # <--- این خط جدید است
+
